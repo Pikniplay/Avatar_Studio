@@ -85,9 +85,7 @@
   #edProgress #progressFill { height: 100%; width: 0; background: #e0284f; }
   #tl { position: fixed; left: 0; right: 0; bottom: 0; height: 236px; width: 100vw; display: none; touch-action: none; z-index: 5; }
   body.editor #tl { display: block; }
-  body.editor #cv { top: var(--topH, 90px); height: calc(100vh - var(--topH, 90px) - 236px); }
   body.hide-ui #edBar, body.hide-ui #edSub, body.hide-ui #tl { display: none !important; }
-  body.hide-ui.editor #cv { top: 0; height: 100vh; }
   #progress { height: 8px; background: #333; border-radius: 4px; overflow: hidden; margin-top: 8px; display: none; }
   #progressFill { height: 100%; width: 0; background: #e0284f; }
   #downloads a { display: block; color: #9fd8ff; font-size: 12.5px; margin: 6px 0; word-break: break-all; }
@@ -2040,15 +2038,23 @@ const BUILTIN_PHOTOS = [HUNTER_AV];
   function seekTo(el, t) { return new Promise(res => { if (Math.abs(el.currentTime - t) < 0.01) return res(); let d = false; const f = () => { if (d) return; d = true; el.removeEventListener('seeked', f); res(); }; el.addEventListener('seeked', f); el.currentTime = t; setTimeout(f, 1500); }); }
 
   // --- layout
+  // Size the preview to the space that's really visible (iPad Safari's 100vh is taller than the screen),
+  // so the whole frame - including the avatar's body at the bottom - sits above the timeline.
   function layout() {
+    if (!body.classList.contains('editor')) { cv.style.top = cv.style.height = cv.style.left = cv.style.width = ''; return; }
     const bh = $('edBar').getBoundingClientRect().height, sh = $('edSub').getBoundingClientRect().height;
+    const vh = window.visualViewport ? window.visualViewport.height : window.innerHeight, vw = window.innerWidth;
+    const tlH = Math.round(Math.min(236, Math.max(170, vh * 0.3)));
+    tl.style.height = tlH + 'px';
     document.documentElement.style.setProperty('--barH', bh + 'px');
-    document.documentElement.style.setProperty('--topH', (bh + sh) + 'px');
+    const top = body.classList.contains('hide-ui') ? 0 : bh + sh, avail = Math.max(120, vh - top - (body.classList.contains('hide-ui') ? 0 : tlH));
+    cv.style.top = top + 'px'; cv.style.height = avail + 'px'; cv.style.left = '0px'; cv.style.width = vw + 'px';
   }
-  function openEditor(on) { body.classList.toggle('editor', on); if (on) { setTimeout(layout, 0); renderTimelineSoon(); } }
+  function openEditor(on) { body.classList.toggle('editor', on); setTimeout(layout, 0); setTimeout(layout, 300); }
   $('openEditor').addEventListener('click', () => openEditor(true));
   $('edClose').addEventListener('click', () => { edPause(); openEditor(false); });
-  window.addEventListener('resize', () => { if (body.classList.contains('editor')) layout(); });
+  window.addEventListener('resize', layout); if (window.visualViewport) window.visualViewport.addEventListener('resize', layout);
+  new MutationObserver(layout).observe(body, { attributes: true, attributeFilter: ['class'] });
 
   // --- undo / redo
   const HIST = { undo: [], redo: [] };
