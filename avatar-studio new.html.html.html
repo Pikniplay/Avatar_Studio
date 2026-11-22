@@ -119,7 +119,7 @@
       <summary>🎞 Clips</summary>
       <div class="file">Add gameplay clip(s)<input type="file" id="fVideo" accept="video/*" multiple></div>
       <div id="clipList"></div>
-      <div class="grid3" id="clipTools">
+      <div class="grid3 hidden" id="clipTools">
         <button id="cSplit">✂ Split</button><button id="cTrimIn">⇤ Trim start</button><button id="cTrimOut">Trim end ⇥</button>
         <button id="cLeft">◀ Move</button><button id="cRight">Move ▶</button><button id="cDel">🗑 Delete</button>
       </div>
@@ -2047,7 +2047,7 @@ const BUILTIN_PHOTOS = [HUNTER_AV];
     ED.switching = true; ED.cur = i;
     [voiceAud, musicAud, faceVid].forEach(el => { try { el.pause(); } catch {} });
     if (video.dataset.url !== c.url) {
-      video.pause(); video.dataset.url = c.url; video.src = c.url;
+      video.pause(); video.dataset.url = c.url; video.playsInline = true; video.preload = 'auto'; video.src = c.url; try { video.load(); } catch {}
       await new Promise(r => { const ok = () => { video.removeEventListener('loadeddata', ok); r(); }; video.addEventListener('loadeddata', ok); setTimeout(ok, 3000); });
       route();
     }
@@ -2122,29 +2122,44 @@ const BUILTIN_PHOTOS = [HUNTER_AV];
   $('seek').addEventListener('input', e => seekGlobal(e.target.value / 1000 * ED.total, false));
 
   // --- media loading
+  // iPad/iPhone Safari often won't load a detached media element, so attach it, force a load,
+  // and if needed briefly play it muted to get its length. Always gives up after a timeout.
   function probe(url, kind) {
     return new Promise((res) => {
-      const el = document.createElement(kind); el.preload = 'metadata'; el.muted = true;
-      el.onloadedmetadata = () => res(isFinite(el.duration) ? el.duration : 0); el.onerror = () => res(0); el.src = url;
+      const el = document.createElement(kind); let done = false;
+      el.muted = true; el.playsInline = true; el.setAttribute('playsinline', ''); el.preload = 'auto';
+      el.style.cssText = 'position:fixed;width:2px;height:2px;opacity:0;pointer-events:none;left:0;top:0';
+      document.body.appendChild(el);
+      const finish = d => { if (done) return; done = true; clearTimeout(t1); clearTimeout(t2); try { el.pause(); } catch {} el.removeAttribute('src'); try { el.load(); } catch {} el.remove(); res(d); };
+      const check = () => { if (isFinite(el.duration) && el.duration > 0) finish(el.duration); };
+      el.addEventListener('loadedmetadata', check); el.addEventListener('durationchange', check); el.addEventListener('canplay', check);
+      el.addEventListener('error', () => finish(0));
+      el.src = url; try { el.load(); } catch {}
+      const t1 = setTimeout(() => { if (!done) { const p = el.play(); if (p && p.catch) p.catch(() => {}); } }, 2500);
+      const t2 = setTimeout(() => finish(isFinite(el.duration) && el.duration > 0 ? el.duration : 0), 20000);
     });
   }
   $('fVideo').addEventListener('change', async e => {
     const files = [...e.target.files]; e.target.value = ''; if (!files.length) return;
-    await ensureAudio();
+    status(`Loading ${files.length} clip${files.length === 1 ? '' : 's'}… (big videos can take a moment)`, true);
+    ensureAudio().catch(() => {});
     for (const f of files) {
       const url = URL.createObjectURL(f), dur = await probe(url, 'video');
-      if (!dur) { status(`Couldn't open ${f.name}. Try an MP4 (in OBS: File → Remux Recordings).`); continue; }
+      if (!dur) { status(`Couldn't open "${f.name}". This browser can't play that video type. Try an MP4 or MOV file.`); continue; }
       ED.clips.push({ id: Math.random().toString(36).slice(2), name: f.name.replace(/\.[^.]+$/, ''), url, dur, in: 0, out: dur, hue: (ED.clips.length * 67 + 200) % 360 });
     }
     const first = ED.clips.length === files.length;
     recalc();
-    if (first && ED.clips.length) { await switchTo(0, ED.clips[0].in, false); ED.T = 0; }
+    if (first && ED.clips.length) {
+      await switchTo(0, ED.clips[0].in, false); ED.T = 0;
+      if (video.readyState < 2) { try { await video.play(); video.pause(); await seekTo(video, ED.clips[0].in); } catch {} }   // iPad: show the first frame
+    }
     status(`${ED.clips.length} clip${ED.clips.length === 1 ? '' : 's'} on the timeline. Press Preview, then Export.`, true);
     route();
   });
   async function loadMedia(kind, f) {
     const el = kind === 'voice' ? voiceAud : musicAud;
-    await ensureAudio();
+    status('Loading audio…', true); ensureAudio().catch(() => {});
     const url = URL.createObjectURL(f), dur = await probe(url, 'audio');
     if (!dur) { status('Could not read that audio file. Try an MP3 or WAV.'); return; }
     el.src = url; el.load();
