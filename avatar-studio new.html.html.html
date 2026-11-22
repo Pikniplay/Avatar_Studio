@@ -84,7 +84,6 @@
 <canvas id="cv" width="1920" height="1080"></canvas>
 <video id="vid" playsinline class="hidden"></video>
 <audio id="voiceAud" class="hidden"></audio>
-<audio id="musicAud" class="hidden"></audio>
 <canvas id="tl"></canvas>
 <video id="faceVid" playsinline muted class="hidden"></video>
 <video id="camPrev" playsinline muted></video>
@@ -633,7 +632,13 @@ const BUILTIN_PHOTOS = [HUNTER_AV];
   }
   function applyGameVol() { if (AC) N.gameGain.gain.value = $('gameVol').value / 100; }
   function safeDisconnect(n) { if (n) try { n.disconnect(); } catch {} }
-  let voiceReady = false, musicNode = null;
+  let voiceReady = false;
+  function edGains() {
+    if (!AC) return;
+    if (!N.voiceGain) { N.voiceGain = AC.createGain(); N.voiceGain.connect(N.voiceIn); }
+    if (!N.musicGain) { N.musicGain = AC.createGain(); N.musicGain.connect(N.recDest); N.musicGain.connect(AC.destination); }
+    N.voiceGain.gain.value = $('voiceVol').value / 100; N.musicGain.gain.value = $('musicVol').value / 100;
+  }
   function route() {
     if (!AC) return;
     safeDisconnect(micNode); safeDisconnect(videoNode); safeDisconnect(voiceNode);
@@ -643,12 +648,8 @@ const BUILTIN_PHOTOS = [HUNTER_AV];
       N.monitor.gain.value = $('monitor').checked ? 1 : 0;
     } else {
       if (video.getAttribute('src') && !videoNode) videoNode = AC.createMediaElementSource(video);
-      if (voiceReady && !voiceNode) voiceNode = AC.createMediaElementSource(voiceAud);
-      if (!N.voiceGain) { N.voiceGain = AC.createGain(); N.voiceGain.connect(N.voiceIn); }
-      if (!N.musicGain) { N.musicGain = AC.createGain(); N.musicGain.connect(N.recDest); N.musicGain.connect(AC.destination); }
-      if (musicReady && !musicNode) { musicNode = AC.createMediaElementSource(musicAud); musicNode.connect(N.musicGain); }
-      N.voiceGain.gain.value = $('voiceVol').value / 100; N.musicGain.gain.value = $('musicVol').value / 100;
-      if (voiceReady) { voiceNode.connect(N.voiceGain); if (videoNode) videoNode.connect(N.gameGain); }
+      edGains();
+      if (voiceReady) { if (videoNode) videoNode.connect(N.gameGain); }
       else if (videoNode) { videoNode.connect(N.voiceIn); N.voiceIn.gain.value = $('gameVol').value / 100; }
       N.monitor.gain.value = 1;
       $('gameVolLbl').textContent = voiceReady ? 'Game sound volume' : 'Video volume (also drives lip sync)';
@@ -719,7 +720,6 @@ const BUILTIN_PHOTOS = [HUNTER_AV];
   }
   $('recBtn').addEventListener('click', toggleLiveRecording);
 
-  const musicAud = $('musicAud');
 
   // ===================== Face tracking (MediaPipe) =====================
   let landmarker = null, trackEl = null, camStream = null, trackLoading = false;
@@ -2017,7 +2017,7 @@ const BUILTIN_PHOTOS = [HUNTER_AV];
   // ===================== Video editor =====================
   var ED = { clips: [], starts: [], total: 0, cur: 0, sel: 0, playing: false, switching: false, lastT: 0, T: 0,
     voice: null, music: null, events: [], caps: [], recTaps: false, firing: false };
-  let exporting = false, faceReady = false, musicReady = false;
+  let exporting = false, faceReady = false;
   const lastFrame = document.createElement('canvas'); lastFrame.width = W; lastFrame.height = H; const lfx = lastFrame.getContext('2d');
   function recalc() {
     let s = 0; ED.starts = ED.clips.map(c => { const v = s; s += Math.max(0.05, c.out - c.in); return v; }); ED.total = s;
@@ -2045,7 +2045,7 @@ const BUILTIN_PHOTOS = [HUNTER_AV];
   async function switchTo(i, local, keepPlaying) {
     const c = ED.clips[i]; if (!c) return;
     ED.switching = true; ED.cur = i;
-    [voiceAud, musicAud, faceVid].forEach(el => { try { el.pause(); } catch {} });
+    stopBufs(); try { faceVid.pause(); } catch {}
     if (video.dataset.url !== c.url) {
       video.pause(); video.dataset.url = c.url; video.playsInline = true; video.preload = 'auto'; video.src = c.url; try { video.load(); } catch {}
       await new Promise(r => { const ok = () => { video.removeEventListener('loadeddata', ok); r(); }; video.addEventListener('loadeddata', ok); setTimeout(ok, 3000); });
@@ -2074,12 +2074,38 @@ const BUILTIN_PHOTOS = [HUNTER_AV];
     if (media.loop) w = w % media.dur; else if (w > media.dur) return null;
     return w;
   }
+  // Voiceover & music play from decoded audio buffers (works reliably on iPad, stays in sync)
+  const BUF = { voice: null, music: null };
+  function stopBufs(k) {
+    for (const kk of k ? [k] : ['voice', 'music']) { const b = BUF[kk]; if (b) { try { b.src.stop(); } catch {} try { b.src.disconnect(); } catch {} BUF[kk] = null; } }
+  }
+  function startBuf(k, T) {
+    const m = ED[k]; if (!m || !AC) return;
+    edGains();
+    let w = T - m.at, delay = 0;
+    if (w < 0) { delay = -w; w = 0; }
+    else if (!m.loop && w >= m.dur) return;
+    const src = AC.createBufferSource(); src.buffer = m.buf; src.loop = !!m.loop;
+    src.connect(k === 'voice' ? N.voiceGain : N.musicGain);
+    const now = AC.currentTime;
+    src.start(now + delay, m.loop ? w % m.dur : w);
+    BUF[k] = { src, t0: now + delay, off: w };
+  }
+  function bufPos(k) { const b = BUF[k], m = ED[k]; if (!b || !AC) return null; const p = b.off + (AC.currentTime - b.t0); return m.loop ? p % m.dur : p; }
   function syncFollowers(T, force) {
-    const pairs = [[ED.voice, voiceAud], [ED.music, musicAud], [faceReady ? { at: 0, dur: faceVid.duration || 1e9 } : null, faceVid]];
-    for (const [m, el] of pairs) {
-      if (!m) continue;
-      const w = want(m, T);
-      if (w === null) { if (!el.paused) el.pause(); continue; }
+    for (const k of ['voice', 'music']) {
+      const m = ED[k]; if (!m) { stopBufs(k); continue; }
+      if (!ED.playing || ED.switching) { stopBufs(k); continue; }
+      const b = BUF[k];
+      if (!b || force) { stopBufs(k); startBuf(k, T); continue; }
+      if (AC.currentTime >= b.t0) {           // started: check drift
+        let wantP = T - m.at; if (m.loop) wantP = ((wantP % m.dur) + m.dur) % m.dur;
+        const p = bufPos(k);
+        if (wantP >= 0 && Math.abs(p - wantP) > 0.3 && Math.abs(p - wantP) < m.dur - 0.3) { stopBufs(k); startBuf(k, T); }
+      }
+    }
+    if (faceReady) {
+      const el = faceVid, w = T;
       if (force || Math.abs(el.currentTime - w) > 0.25) { try { el.currentTime = w; } catch {} }
       if (ED.playing && !ED.switching && el.paused) el.play().catch(() => {});
       if (!ED.playing && !el.paused) el.pause();
@@ -2116,7 +2142,7 @@ const BUILTIN_PHOTOS = [HUNTER_AV];
     ED.playing = true;
     try { await video.play(); } catch {}
   }
-  function edPause() { ED.playing = false; [video, voiceAud, musicAud, faceVid].forEach(el => { try { el.pause(); } catch {} }); if (packSrc) try { packSrc.stop(); } catch {} }
+  function edPause() { ED.playing = false; stopBufs(); [video, faceVid].forEach(el => { try { el.pause(); } catch {} }); if (packSrc) try { packSrc.stop(); } catch {} }
   $('playBtn').addEventListener('click', () => ED.playing ? edPause() : edPlay());
   $('stopPrevBtn').addEventListener('click', () => seekGlobal(0, false));
   $('seek').addEventListener('input', e => seekGlobal(e.target.value / 1000 * ED.total, false));
@@ -2158,19 +2184,24 @@ const BUILTIN_PHOTOS = [HUNTER_AV];
     route();
   });
   async function loadMedia(kind, f) {
-    const el = kind === 'voice' ? voiceAud : musicAud;
-    status('Loading audio…', true); ensureAudio().catch(() => {});
-    const url = URL.createObjectURL(f), dur = await probe(url, 'audio');
-    if (!dur) { status('Could not read that audio file. Try an MP3 or WAV.'); return; }
-    el.src = url; el.load();
-    ED[kind] = { url, dur, at: ED[kind] ? ED[kind].at : 0, name: f.name, loop: kind === 'music' ? $('musicLoop').checked : false };
-    if (kind === 'voice') voiceReady = true; else musicReady = true;
-    $(kind + 'Ctl').classList.remove('hidden'); updOffsets(); route(); renderTimelineSoon();
-    status(kind === 'voice' ? 'Voiceover added. The avatar lip-syncs to it.' : 'Music added.', true);
+    status('Loading audio…', true);
+    try {
+      await ensureAudio();
+      const ab = await f.arrayBuffer();
+      const buf = await new Promise((res, rej) => { const p = AC.decodeAudioData(ab, res, rej); if (p && p.then) p.then(res, rej); });
+      stopBufs(kind);
+      ED[kind] = { buf, dur: buf.duration, at: ED[kind] ? ED[kind].at : 0, name: f.name, loop: kind === 'music' ? $('musicLoop').checked : false };
+      if (kind === 'voice') voiceReady = true;
+      $(kind + 'Ctl').classList.remove('hidden'); updOffsets(); route(); renderTimelineSoon();
+      if (ED.playing) syncFollowers(ED.T, true);
+      status(kind === 'voice' ? `Voiceover added (${fmt(buf.duration)}). The avatar lip-syncs to it.` : `Music added (${fmt(buf.duration)}).`, true);
+    } catch (e) {
+      status('Could not read that audio file. Try an MP3, M4A or WAV file.');
+    }
   }
   $('fVoice').addEventListener('change', e => { const f = e.target.files[0]; e.target.value = ''; if (f) loadMedia('voice', f); });
   $('fMusic').addEventListener('change', e => { const f = e.target.files[0]; e.target.value = ''; if (f) loadMedia('music', f); });
-  $('musicLoop').addEventListener('change', e => { if (ED.music) ED.music.loop = e.target.checked; });
+  $('musicLoop').addEventListener('change', e => { if (ED.music) { ED.music.loop = e.target.checked; syncFollowers(ED.T, true); } });
   function updOffsets() {
     if (ED.voice) $('voiceAtTxt').textContent = ED.voice.at.toFixed(1) + 's';
     if (ED.music) $('musicAtTxt').textContent = ED.music.at.toFixed(1) + 's';
@@ -2179,8 +2210,8 @@ const BUILTIN_PHOTOS = [HUNTER_AV];
   document.querySelectorAll('[data-off]').forEach(b => b.addEventListener('click', () => { const m = ED[b.dataset.off]; if (!m) return; m.at = Math.max(0, m.at + +b.dataset.d); updOffsets(); syncFollowers(ED.T, true); }));
   document.querySelectorAll('[data-at]').forEach(b => b.addEventListener('click', () => { const m = ED[b.dataset.at]; if (!m) return; m.at = ED.T; updOffsets(); syncFollowers(ED.T, true); }));
   document.querySelectorAll('[data-rm]').forEach(b => b.addEventListener('click', () => {
-    const k = b.dataset.rm; ED[k] = null; const el = k === 'voice' ? voiceAud : musicAud; el.pause();
-    if (k === 'voice') voiceReady = false; else musicReady = false;
+    const k = b.dataset.rm; stopBufs(k); ED[k] = null;
+    if (k === 'voice') voiceReady = false;
     $(k + 'Ctl').classList.add('hidden'); route();
   }));
   ['voiceVol', 'musicVol'].forEach(id => { const el = $(id); el.value = store.get(id, el.value); el.addEventListener('input', () => { store.set(id, el.value); updOffsets(); route(); }); });
