@@ -127,7 +127,7 @@
     </details>
     <details class="ed">
       <summary>🎙 Voiceover</summary>
-      <div class="file">Voice audio (e.g. your ElevenLabs MP3)<input type="file" id="fVoice" accept="audio/*,video/*"></div>
+      <div class="file">Voice audio (e.g. your ElevenLabs MP3)<input type="file" id="fVoice"></div>
       <div id="voiceCtl" class="hidden">
         <div class="row"><label><span>Starts at</span><span id="voiceAtTxt">0.0s</span></label>
           <div class="grid3"><button data-off="voice" data-d="-0.5">−0.5s</button><button data-at="voice">At playhead</button><button data-off="voice" data-d="0.5">+0.5s</button></div></div>
@@ -137,7 +137,7 @@
     </details>
     <details class="ed">
       <summary>🎵 Music</summary>
-      <div class="file">Background music<input type="file" id="fMusic" accept="audio/*"></div>
+      <div class="file">Background music<input type="file" id="fMusic"></div>
       <div id="musicCtl" class="hidden">
         <div class="row"><label><span>Starts at</span><span id="musicAtTxt">0.0s</span></label>
           <div class="grid3"><button data-off="music" data-d="-0.5">−0.5s</button><button data-at="music">At playhead</button><button data-off="music" data-d="0.5">+0.5s</button></div></div>
@@ -303,8 +303,8 @@
       <div class="lbl"><span>🎤 Voice packs</span></div>
       <p class="tip">Built-in Miami male and female voices are ready to use. Want your own? 1. Copy the script. 2. Paste it into ElevenLabs, pick a voice, generate and download. 3. Upload it here. The app cuts it into the lines automatically.</p>
       <button id="packScript">📋 Copy voice pack script</button>
-      <div class="file" style="margin-top:8px">🧔 Male voice pack <span id="packMStat" class="ok"></span><input type="file" id="packM" accept="audio/*,video/*"></div>
-      <div class="file">👩 Female voice pack <span id="packFStat" class="ok"></span><input type="file" id="packF" accept="audio/*,video/*"></div>
+      <div class="file" style="margin-top:8px">🧔 Male voice pack <span id="packMStat" class="ok"></span><input type="file" id="packM"></div>
+      <div class="file">👩 Female voice pack <span id="packFStat" class="ok"></span><input type="file" id="packF"></div>
       <div class="two"><button id="packMDel">Reset male voice</button><button id="packFDel">Reset female voice</button></div>
       <p class="tip">Buttons with a pack loaded use the real voice: the avatar lip-syncs to it and it's included in exported videos. Without a pack, your device's built-in voice is used, which isn't included in exports.</p>
     </div>
