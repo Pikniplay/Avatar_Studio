@@ -60,7 +60,8 @@
   .li { display: flex; justify-content: space-between; align-items: center; gap: 6px; font-size: 12px; padding: 6px 8px; margin: 4px 0; border-radius: 8px; background: #262236; cursor: pointer; }
   .li.on { background: #4a3a9a; } .li small { color: #bbb; } .li .x { color: #ff7a90; padding: 0 4px; cursor: pointer; }
   input.txt { width: 100%; padding: 8px; border-radius: 8px; border: 1px solid #443d5e; background: #2a2640; color: #eee; font-size: 13px; margin: 6px 0; }
-  #tl { position: fixed; left: 378px; right: 14px; bottom: 14px; height: 140px; width: calc(100vw - 392px); border-radius: 12px; display: none; touch-action: none; z-index: 4; }
+  body.video-mode:not(.hide-ui) #cv { height: calc(100vh - 186px); }
+  #tl { position: fixed; left: 378px; right: 14px; bottom: 14px; height: 160px; width: calc(100vw - 392px); border-radius: 12px; display: none; touch-action: none; z-index: 4; }
   body.video-mode #tl { display: block; } body.hide-ui #tl { display: none !important; }
   @media (max-width: 800px) { #tl { left: 14px; width: calc(100vw - 28px); bottom: 14px; } }
   #progress { height: 8px; background: #333; border-radius: 4px; overflow: hidden; margin-top: 8px; display: none; }
@@ -114,15 +115,16 @@
   </div>
 
   <div class="box hidden" id="videoBox">
+    <div class="grid4" style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:0 0 8px"><button id="undoBtn" disabled>↶ Undo</button><button id="redoBtn" disabled>↷ Redo</button><button id="zoomOut">🔍－</button><button id="zoomIn">🔍＋</button></div>
     <details open class="ed">
       <summary>🎞 Clips</summary>
       <div class="file">Add gameplay clip(s)<input type="file" id="fVideo" accept="video/*" multiple></div>
       <div id="clipList"></div>
       <div class="grid3 hidden" id="clipTools">
-        <button id="cSplit">✂ Split</button><button id="cTrimIn">⇤ Trim start</button><button id="cTrimOut">Trim end ⇥</button>
-        <button id="cLeft">◀ Move</button><button id="cRight">Move ▶</button><button id="cDel">🗑 Delete</button>
+        <button id="cSplit">✂ Split</button><button id="cRestore">↺ Full length</button><button id="cDel">🗑 Delete</button>
+        <button id="cLeft">◀ Move</button><button id="cRight">Move ▶</button><button id="zoomFit">↔ Fit</button>
       </div>
-      <p class="tip">Tap a clip on the timeline to select it. Split and trim work at the playhead (the white line).</p>
+      <p class="tip"><b>Trim:</b> drag the white handles at either end of a clip on the timeline. Drag them back out to restore footage you cut. <b>Split</b> cuts at the playhead (the white line). Use 🔍＋ to zoom in for precise edits.</p>
     </details>
     <details class="ed">
       <summary>🎙 Voiceover</summary>
@@ -163,6 +165,8 @@
         <select id="capCol"><option value="#ffffff">White</option><option value="#ffe14d">Yellow</option><option value="#ff4fa0">Pink</option><option value="#4dfff0">Cyan</option><option value="#7dff6b">Green</option></select>
       </div>
       <button id="capAdd" class="primary" style="margin-top:8px">＋ Add caption at playhead</button>
+      <button id="capNew" class="hidden" style="margin-top:6px">Cancel editing (add a new one instead)</button>
+      <p class="tip">Tap a caption on the timeline or in the list to edit it. Drag it to move it, and drag its right end to change how long it shows.</p>
       <div id="capList"></div>
     </details>
     <details class="ed">
@@ -2018,6 +2022,32 @@ const BUILTIN_PHOTOS = [HUNTER_AV];
   var ED = { clips: [], starts: [], total: 0, cur: 0, sel: 0, playing: false, switching: false, lastT: 0, T: 0,
     voice: null, music: null, events: [], caps: [], recTaps: false, firing: false };
   let exporting = false, faceReady = false;
+  // --- undo / redo: snapshot the edit before every change
+  const HIST = { undo: [], redo: [] };
+  function snap() {
+    return JSON.stringify({ clips: ED.clips, events: ED.events, caps: ED.caps, sel: ED.sel, T: ED.T,
+      vAt: ED.voice ? ED.voice.at : null, mAt: ED.music ? ED.music.at : null });
+  }
+  function pushUndo() { HIST.undo.push(snap()); if (HIST.undo.length > 60) HIST.undo.shift(); HIST.redo = []; updUndo(); }
+  function restore(js) {
+    const o = JSON.parse(js);
+    ED.clips = o.clips; ED.events = o.events; ED.caps = o.caps; ED.sel = o.sel; ED.capSel = -1;
+    if (ED.voice && o.vAt !== null) ED.voice.at = o.vAt;
+    if (ED.music && o.mAt !== null) ED.music.at = o.mAt;
+    edPause(); recalc(); updOffsets();
+    if (ED.clips.length) seekGlobal(Math.min(o.T, Math.max(0, ED.total - 0.05)), false);
+    else { video.removeAttribute('src'); video.dataset.url = ''; video.load(); lfx.clearRect(0, 0, W, H); }
+  }
+  function updUndo() { $('undoBtn').disabled = !HIST.undo.length; $('redoBtn').disabled = !HIST.redo.length; }
+  function doUndo() { if (!HIST.undo.length) return; HIST.redo.push(snap()); restore(HIST.undo.pop()); updUndo(); status('Undone.', true); }
+  function doRedo() { if (!HIST.redo.length) return; HIST.undo.push(snap()); restore(HIST.redo.pop()); updUndo(); status('Redone.', true); }
+  $('undoBtn').addEventListener('click', doUndo);
+  $('redoBtn').addEventListener('click', doRedo);
+  document.addEventListener('keydown', e => {
+    if (S.mode !== 'video' || !(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'z') return;
+    const a = document.activeElement; if (a && a.tagName === 'INPUT' && a.type === 'text') return;
+    e.preventDefault(); e.shiftKey ? doRedo() : doUndo();
+  });
   const lastFrame = document.createElement('canvas'); lastFrame.width = W; lastFrame.height = H; const lfx = lastFrame.getContext('2d');
   function recalc() {
     let s = 0; ED.starts = ED.clips.map(c => { const v = s; s += Math.max(0.05, c.out - c.in); return v; }); ED.total = s;
@@ -2169,6 +2199,7 @@ const BUILTIN_PHOTOS = [HUNTER_AV];
     const files = [...e.target.files]; e.target.value = ''; if (!files.length) return;
     status(`Loading ${files.length} clip${files.length === 1 ? '' : 's'}… (big videos can take a moment)`, true);
     ensureAudio().catch(() => {});
+    pushUndo();
     for (const f of files) {
       const url = URL.createObjectURL(f), dur = await probe(url, 'video');
       if (!dur) { status(`Couldn't open "${f.name}". This browser can't play that video type. Try an MP4 or MOV file.`); continue; }
@@ -2207,8 +2238,8 @@ const BUILTIN_PHOTOS = [HUNTER_AV];
     if (ED.music) $('musicAtTxt').textContent = ED.music.at.toFixed(1) + 's';
     $('voiceVolVal').textContent = $('voiceVol').value + '%'; $('musicVolVal').textContent = $('musicVol').value + '%';
   }
-  document.querySelectorAll('[data-off]').forEach(b => b.addEventListener('click', () => { const m = ED[b.dataset.off]; if (!m) return; m.at = Math.max(0, m.at + +b.dataset.d); updOffsets(); syncFollowers(ED.T, true); }));
-  document.querySelectorAll('[data-at]').forEach(b => b.addEventListener('click', () => { const m = ED[b.dataset.at]; if (!m) return; m.at = ED.T; updOffsets(); syncFollowers(ED.T, true); }));
+  document.querySelectorAll('[data-off]').forEach(b => b.addEventListener('click', () => { const m = ED[b.dataset.off]; if (!m) return; pushUndo(); m.at = Math.max(0, m.at + +b.dataset.d); updOffsets(); syncFollowers(ED.T, true); }));
+  document.querySelectorAll('[data-at]').forEach(b => b.addEventListener('click', () => { const m = ED[b.dataset.at]; if (!m) return; pushUndo(); m.at = ED.T; updOffsets(); syncFollowers(ED.T, true); }));
   document.querySelectorAll('[data-rm]').forEach(b => b.addEventListener('click', () => {
     const k = b.dataset.rm; stopBufs(k); ED[k] = null;
     if (k === 'voice') voiceReady = false;
@@ -2237,32 +2268,24 @@ const BUILTIN_PHOTOS = [HUNTER_AV];
   $('cSplit').addEventListener('click', () => {
     if (!ED.clips.length) return; const L = selAtPlayhead(), c = ED.clips[L.i];
     if (L.local - c.in < 0.2 || c.out - L.local < 0.2) { status('Move the playhead further into the clip to split it.'); return; }
+    pushUndo();
     const b = { ...c, id: Math.random().toString(36).slice(2), in: L.local };
     c.out = L.local; ED.clips.splice(L.i + 1, 0, b); ED.sel = L.i + 1; recalc(); status('Clip split. Select a piece to trim, move or delete it.', true);
   });
-  $('cTrimIn').addEventListener('click', () => {
-    if (!ED.clips.length) return; const L = selAtPlayhead(), c = ED.clips[L.i];
-    if (c.out - L.local < 0.2) return; const cut = L.local - c.in; c.in = L.local;
-    ED.events.forEach(ev => { if (ev.t > ED.starts[L.i]) ev.t = Math.max(ED.starts[L.i], ev.t - cut); });
-    ED.caps.forEach(cp => { if (cp.t > ED.starts[L.i]) cp.t = Math.max(ED.starts[L.i], cp.t - cut); });
-    recalc(); seekGlobal(ED.starts[L.i], false);
+  $('cRestore').addEventListener('click', () => {
+    const c = ED.clips[ED.sel]; if (!c || (c.in === 0 && c.out === c.dur)) return;
+    pushUndo(); c.in = 0; c.out = c.dur; recalc(); seekGlobal(ED.starts[ED.sel] + 0.01, false); status('Clip restored to its full length.', true);
   });
-  $('cTrimOut').addEventListener('click', () => {
-    if (!ED.clips.length) return; const L = selAtPlayhead(), c = ED.clips[L.i];
-    if (L.local - c.in < 0.2) return; const cut = c.out - L.local, endT = ED.starts[L.i] + (L.local - c.in);
-    c.out = L.local;
-    ED.events = ED.events.filter(ev => !(ev.t > endT && ev.t <= endT + cut)); ED.events.forEach(ev => { if (ev.t > endT + cut) ev.t -= cut; });
-    ED.caps.forEach(cp => { if (cp.t > endT) cp.t = Math.max(endT, cp.t - cut); });
-    recalc(); seekGlobal(Math.max(0, endT - 0.05), false);
-  });
+  $('zoomFit').addEventListener('click', () => { TLV.z = 1; TLV.view = 0; renderTimelineSoon(); });
   function moveClip(d) {
     const i = ED.sel, j = i + d; if (j < 0 || j >= ED.clips.length) return;
+    pushUndo();
     [ED.clips[i], ED.clips[j]] = [ED.clips[j], ED.clips[i]]; ED.sel = j; recalc(); seekGlobal(ED.starts[j] + 0.01, false);
   }
   $('cLeft').addEventListener('click', () => moveClip(-1));
   $('cRight').addEventListener('click', () => moveClip(1));
   $('cDel').addEventListener('click', () => {
-    if (!ED.clips.length) return; ED.clips.splice(ED.sel, 1); recalc();
+    if (!ED.clips.length) return; pushUndo(); ED.clips.splice(ED.sel, 1); recalc();
     if (ED.clips.length) seekGlobal(Math.min(ED.T, ED.total - 0.05), false); else { video.removeAttribute('src'); video.dataset.url = ''; video.load(); lfx.clearRect(0, 0, W, H); }
   });
 
@@ -2270,6 +2293,7 @@ const BUILTIN_PHOTOS = [HUNTER_AV];
   EXPRS.forEach(e => $('evFace').appendChild(new Option(e.label, e.id)));
   FX.forEach((f, i) => $('evFx').appendChild(new Option(f.label, i)));
   function addEvent(type, v, t = ED.T) {
+    pushUndo();
     ED.events.push({ type, v, t: +t.toFixed(2) }); ED.events.sort((a, b) => a.t - b.t); renderEvList();
   }
   $('evFaceAdd').addEventListener('click', () => { if (!ED.clips.length) return; addEvent('expr', $('evFace').value); applyExprAt(ED.T); });
@@ -2285,27 +2309,41 @@ const BUILTIN_PHOTOS = [HUNTER_AV];
       const d = document.createElement('div'); d.className = 'li';
       d.innerHTML = `<span>${fmt(ev.t)}.${String(Math.floor(ev.t % 1 * 10))} &nbsp;${evLabel(ev)}</span>`;
       const x = document.createElement('b'); x.textContent = '✕'; x.className = 'x';
-      x.addEventListener('click', e2 => { e2.stopPropagation(); ED.events.splice(i, 1); renderEvList(); });
+      x.addEventListener('click', e2 => { e2.stopPropagation(); pushUndo(); ED.events.splice(i, 1); renderEvList(); });
       d.appendChild(x); d.addEventListener('click', () => seekGlobal(ev.t, false));
       L.appendChild(d);
     });
     renderTimelineSoon();
   }
   // --- captions
+  ED.capSel = -1;
+  function selectCaption(i) {
+    ED.capSel = i; const c = ED.caps[i];
+    if (c) { $('capText').value = c.text; $('capPos').value = c.pos; $('capCol').value = c.col; const o = [...$('capDur').options].find(o => +o.value === c.d); if (o) $('capDur').value = o.value; }
+    else $('capText').value = '';
+    $('capAdd').textContent = c ? '✓ Update caption' : '＋ Add caption at playhead';
+    $('capNew').classList.toggle('hidden', !c);
+    const det = $('capText').closest('details'); if (c && det) det.open = true;
+    renderCapList();
+  }
   $('capAdd').addEventListener('click', () => {
-    const text = $('capText').value.trim(); if (!text || !ED.clips.length) return;
-    ED.caps.push({ t: +ED.T.toFixed(2), d: +$('capDur').value, text, pos: $('capPos').value, col: $('capCol').value });
-    ED.caps.sort((a, b) => a.t - b.t); $('capText').value = ''; renderCapList();
+    const text = $('capText').value.trim(); if (!text || !ED.clips.length) { if (!ED.clips.length) status('Add a gameplay clip first.'); return; }
+    pushUndo();
+    const c = ED.caps[ED.capSel];
+    if (c) { c.text = text; c.pos = $('capPos').value; c.col = $('capCol').value; status('Caption updated.', true); }
+    else { ED.caps.push({ t: +ED.T.toFixed(2), d: +$('capDur').value, text, pos: $('capPos').value, col: $('capCol').value }); status('Caption added. Drag it on the timeline to move it, or drag its right end to make it longer.', true); }
+    ED.caps.sort((a, b) => a.t - b.t); selectCaption(-1);
   });
+  $('capNew').addEventListener('click', () => selectCaption(-1));
   $('capText').addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') $('capAdd').click(); });
   function renderCapList() {
     const L = $('capList'); L.innerHTML = '';
     ED.caps.forEach((c, i) => {
-      const d = document.createElement('div'); d.className = 'li';
+      const d = document.createElement('div'); d.className = 'li' + (i === ED.capSel ? ' on' : '');
       d.innerHTML = `<span>${fmt(c.t)} &nbsp;“${c.text.slice(0, 24)}”</span>`;
       const x = document.createElement('b'); x.textContent = '✕'; x.className = 'x';
-      x.addEventListener('click', e2 => { e2.stopPropagation(); ED.caps.splice(i, 1); renderCapList(); });
-      d.appendChild(x); d.addEventListener('click', () => seekGlobal(c.t, false));
+      x.addEventListener('click', e2 => { e2.stopPropagation(); pushUndo(); ED.caps.splice(i, 1); selectCaption(-1); });
+      d.appendChild(x); d.addEventListener('click', () => { selectCaption(i); seekGlobal(c.t + 0.05, false); });
       L.appendChild(d);
     });
     renderTimelineSoon();
@@ -2346,47 +2384,122 @@ const BUILTIN_PHOTOS = [HUNTER_AV];
   }
   $('exportBtn').addEventListener('click', exportVideo);
 
-  // --- timeline canvas
+  // --- timeline canvas (CapCut-style: drag clip edges to trim, drag markers/captions/audio to move, zoom)
   const tl = $('tl'), tg = tl.getContext('2d'); let tlDirty = true, tlDrag = null;
   function renderTimelineSoon() { tlDirty = true; }
-  const ROWS = { ruler: [0, 18], clips: [20, 58], voice: [62, 74], music: [78, 90], ev: [94, 118], cap: [122, 136] };
-  function tlSize() { const r = tl.getBoundingClientRect(), dpr = window.devicePixelRatio || 1; if (tl.width !== Math.round(r.width * dpr)) { tl.width = Math.round(r.width * dpr); tl.height = Math.round(r.height * dpr); } return { w: r.width, h: r.height, dpr }; }
+  const ROWS = { ruler: [0, 18], clips: [22, 68], voice: [72, 84], music: [88, 100], ev: [104, 130], cap: [134, 154] };
+  const TLV = { z: 1, view: 0 };
+  function tlSize() { const r = tl.getBoundingClientRect(), dpr = window.devicePixelRatio || 1; if (tl.width !== Math.round(r.width * dpr) || tl.height !== Math.round(r.height * dpr)) { tl.width = Math.round(r.width * dpr); tl.height = Math.round(r.height * dpr); } return { w: r.width, h: r.height, dpr }; }
+  function geo() {
+    const w = tl.getBoundingClientRect().width, pad = 12, iw = w - pad * 2, total = Math.max(ED.total, 1);
+    const pps = iw * TLV.z / total, vis = iw / pps;
+    TLV.view = clamp(TLV.view, 0, Math.max(0, total - vis));
+    return { pad, iw, total, pps, vis, X: t => pad + (t - TLV.view) * pps, Tof: x => TLV.view + (x - pad) / pps };
+  }
+  function zoom(f) { const G = geo(); const center = ED.T; TLV.z = clamp(TLV.z * f, 1, 60); const G2 = geo(); TLV.view = center - G2.vis / 2; renderTimelineSoon(); }
+  $('zoomIn').addEventListener('click', () => zoom(2));
+  $('zoomOut').addEventListener('click', () => zoom(0.5));
   function drawTimeline() {
     if (S.mode !== 'video' || body.classList.contains('hide-ui')) return;
     const { w, h, dpr } = tlSize(); tg.setTransform(dpr, 0, 0, dpr, 0, 0);
-    tg.clearRect(0, 0, w, h); tg.fillStyle = 'rgba(16,14,26,0.93)'; tg.fillRect(0, 0, w, h);
-    const pad = 10, iw = w - pad * 2, total = Math.max(ED.total, 1), X = t => pad + t / total * iw;
+    tg.clearRect(0, 0, w, h); tg.fillStyle = 'rgba(16,14,26,0.95)'; tg.fillRect(0, 0, w, h);
     tg.font = '10px system-ui, sans-serif'; tg.textBaseline = 'middle';
-    if (!ED.clips.length) { tg.fillStyle = '#aaa'; tg.font = '13px system-ui'; tg.fillText('Timeline: add gameplay clips in 🎞 Clips to start editing', pad, h / 2); return; }
-    const step = [1, 2, 5, 10, 15, 30, 60, 120, 300].find(s => total / s < iw / 60) || 600;
-    for (let s = 0; s <= total; s += step) { tg.fillStyle = '#777'; tg.fillRect(X(s), 12, 1, 6); tg.fillStyle = '#aaa'; tg.fillText(fmt(s), X(s) + 3, 7); }
+    if (!ED.clips.length) { tg.fillStyle = '#aaa'; tg.font = '13px system-ui'; tg.fillText('Timeline: add gameplay clips in 🎞 Clips to start editing', 12, h / 2); return; }
+    const G = geo(), X = G.X;
+    if (ED.playing && !tlDrag && (ED.T < TLV.view || ED.T > TLV.view + G.vis * 0.92)) TLV.view = ED.T - G.vis * 0.1;
+    tg.save(); tg.beginPath(); tg.rect(0, 0, w, h); tg.clip();
+    const step = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300].find(s => s * G.pps > 55) || 600;
+    for (let s = Math.floor(TLV.view / step) * step; s <= TLV.view + G.vis + step; s += step) { if (s < 0) continue; tg.fillStyle = '#777'; tg.fillRect(X(s), 12, 1, 6); tg.fillStyle = '#aaa'; tg.fillText(fmt(s) + (step < 1 && s % 1 ? '.5' : ''), X(s) + 3, 7); }
+    // clips (with ripple preview while trimming the left edge)
+    const D = tlDrag && tlDrag.mode === 'trimL' && tlDrag.moved ? tlDrag : null;
     ED.clips.forEach((c, i) => {
-      const x0 = X(ED.starts[i]), x1 = X(ED.starts[i] + c.out - c.in), [y0, y1] = ROWS.clips;
-      tg.fillStyle = `hsl(${c.hue},55%,${i === ED.sel ? 52 : 38}%)`; tg.fillRect(x0 + 1, y0, Math.max(2, x1 - x0 - 2), y1 - y0);
-      if (i === ED.sel) { tg.strokeStyle = '#fff'; tg.lineWidth = 2; tg.strokeRect(x0 + 1, y0, Math.max(2, x1 - x0 - 2), y1 - y0); }
-      tg.save(); tg.beginPath(); tg.rect(x0 + 2, y0, x1 - x0 - 4, y1 - y0); tg.clip();
-      tg.fillStyle = '#fff'; tg.font = '11px system-ui'; tg.fillText(`🎞 ${c.name}`, x0 + 6, (y0 + y1) / 2); tg.restore();
+      const shift = D && i >= D.i ? (c === ED.clips[D.i] ? (c.in - D.in0) : (ED.clips[D.i].in - D.in0)) * G.pps : 0;
+      const x0 = X(ED.starts[i]) + shift, x1 = X(ED.starts[i] + c.out - c.in) + shift, [y0, y1] = ROWS.clips, on = i === ED.sel;
+      tg.fillStyle = `hsl(${c.hue},55%,${on ? 50 : 36}%)`; tg.fillRect(x0 + 1, y0, Math.max(2, x1 - x0 - 2), y1 - y0);
+      tg.save(); tg.beginPath(); tg.rect(x0 + 14, y0, Math.max(0, x1 - x0 - 28), y1 - y0); tg.clip();
+      tg.fillStyle = '#fff'; tg.font = '11px system-ui'; tg.fillText(`🎞 ${c.name}`, x0 + 16, y0 + 12);
+      tg.fillStyle = 'rgba(255,255,255,0.7)'; tg.font = '9px system-ui'; tg.fillText(`${fmt(c.in)}–${fmt(c.out)} of ${fmt(c.dur)}`, x0 + 16, y1 - 10); tg.restore();
+      // trim handles (white bars like CapCut)
+      tg.fillStyle = on ? '#fff' : 'rgba(255,255,255,0.45)';
+      tg.fillRect(x0 + 1, y0, on ? 10 : 5, y1 - y0); tg.fillRect(x1 - (on ? 11 : 6), y0, on ? 10 : 5, y1 - y0);
+      if (on) { tg.fillStyle = '#333'; [x0 + 5, x1 - 6].forEach(hx => { tg.fillRect(hx, (y0 + y1) / 2 - 8, 2, 16); }); }
     });
-    const bar = (m, row, col, label) => { if (!m) return; const [y0, y1] = ROWS[row]; const len = m.loop ? total - m.at : m.dur; tg.fillStyle = col; tg.fillRect(X(m.at), y0, Math.max(2, X(Math.min(total, m.at + len)) - X(m.at)), y1 - y0); tg.fillStyle = '#000'; tg.font = '9px system-ui'; tg.fillText(label, X(m.at) + 4, (y0 + y1) / 2); };
-    bar(ED.voice, 'voice', '#7c5cff', '🎙 voiceover'); bar(ED.music, 'music', '#3ddc84', '🎵 music');
+    const bar = (m, row, col, label) => { if (!m) return; const [y0, y1] = ROWS[row]; const len = m.loop ? G.total - m.at : m.dur; tg.fillStyle = col; tg.fillRect(X(m.at), y0, Math.max(3, X(Math.min(G.total, m.at + len)) - X(m.at)), y1 - y0); tg.fillStyle = '#000'; tg.font = '9px system-ui'; tg.fillText(label, X(m.at) + 4, (y0 + y1) / 2); };
+    bar(ED.voice, 'voice', '#7c5cff', '🎙 voiceover (drag to move)'); bar(ED.music, 'music', '#3ddc84', '🎵 music (drag to move)');
     tg.font = '15px system-ui'; tg.textAlign = 'center';
-    ED.events.forEach(ev => { const x = X(ev.t); tg.fillStyle = ev.type === 'expr' ? '#ffd166' : '#ff4d8d'; tg.fillRect(x - 0.5, ROWS.ev[0], 1, ROWS.ev[1] - ROWS.ev[0]); tg.fillText(evLabel(ev).split(' ')[0], x, (ROWS.ev[0] + ROWS.ev[1]) / 2); });
+    ED.events.forEach(ev => { const x = X(ev.t); tg.fillStyle = ev.type === 'expr' ? '#ffd166' : '#ff4d8d'; tg.fillRect(x - 1, ROWS.ev[0], 2, ROWS.ev[1] - ROWS.ev[0]); tg.fillText(evLabel(ev).split(' ')[0], x, (ROWS.ev[0] + ROWS.ev[1]) / 2); });
     tg.textAlign = 'start';
-    ED.caps.forEach(c => { const [y0, y1] = ROWS.cap; tg.fillStyle = 'rgba(255,255,255,0.85)'; tg.fillRect(X(c.t), y0, Math.max(3, X(c.t + c.d) - X(c.t)), y1 - y0); tg.fillStyle = '#000'; tg.font = '9px system-ui'; tg.fillText('💬 ' + c.text.slice(0, 18), X(c.t) + 3, (y0 + y1) / 2); });
-    const px = X(ED.T); tg.fillStyle = '#fff'; tg.fillRect(px - 1, 0, 2, h); tg.beginPath(); tg.moveTo(px - 6, 0); tg.lineTo(px + 6, 0); tg.lineTo(px, 8); tg.fill();
+    ED.caps.forEach((c, i) => {
+      const [y0, y1] = ROWS.cap, x0 = X(c.t), x1 = X(c.t + c.d), on = i === ED.capSel;
+      tg.fillStyle = on ? '#ffe14d' : 'rgba(255,255,255,0.85)'; tg.fillRect(x0, y0, Math.max(4, x1 - x0), y1 - y0);
+      tg.fillStyle = 'rgba(0,0,0,0.35)'; tg.fillRect(x1 - 5, y0, 5, y1 - y0);
+      tg.save(); tg.beginPath(); tg.rect(x0, y0, Math.max(0, x1 - x0 - 6), y1 - y0); tg.clip();
+      tg.fillStyle = '#000'; tg.font = '9px system-ui'; tg.fillText('💬 ' + c.text, x0 + 3, (y0 + y1) / 2); tg.restore();
+    });
+    const px = X(ED.T); tg.fillStyle = '#fff'; tg.fillRect(px - 1, 0, 2, h); tg.beginPath(); tg.moveTo(px - 7, 0); tg.lineTo(px + 7, 0); tg.lineTo(px, 9); tg.fill();
+    tg.restore();
   }
-  function tlT(e) { const r = tl.getBoundingClientRect(), pad = 10; return clamp((e.clientX - r.left - pad) / (r.width - pad * 2), 0, 1) * ED.total; }
+  function evPos(e) { const r = tl.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+  function hitTest(x, y) {
+    const G = geo(), X = G.X, inRow = r => y >= ROWS[r][0] - 3 && y <= ROWS[r][1] + 3, E = 14;
+    if (inRow('clips')) {
+      let best = null;
+      ED.clips.forEach((c, i) => {
+        const x0 = X(ED.starts[i]), x1 = X(ED.starts[i] + c.out - c.in);
+        const bonus = i === ED.sel ? 6 : 0;
+        if (Math.abs(x - x0) <= E + bonus && (x >= x0 - 2 || i === 0)) { const d = Math.abs(x - x0) - bonus; if (!best || d < best.d) best = { mode: 'trimL', i, d }; }
+        if (Math.abs(x - x1) <= E + bonus && (x <= x1 + 2 || i === ED.clips.length - 1)) { const d = Math.abs(x - x1) - bonus; if (!best || d < best.d) best = { mode: 'trimR', i, d }; }
+      });
+      if (best) return best;
+      return { mode: 'scrub', selClip: true };
+    }
+    if (inRow('ev')) { let best = null; ED.events.forEach((ev, i) => { const d = Math.abs(x - X(ev.t)); if (d < 16 && (!best || d < best.d)) best = { mode: 'ev', i, d }; }); if (best) return best; }
+    if (inRow('cap')) {
+      for (let i = ED.caps.length - 1; i >= 0; i--) { const c = ED.caps[i], x0 = X(c.t), x1 = X(c.t + c.d); if (Math.abs(x - x1) < 12) return { mode: 'capR', i }; if (x >= x0 && x <= x1) return { mode: 'cap', i }; }
+    }
+    for (const k of ['voice', 'music']) if (inRow(k) && ED[k]) { const m = ED[k], len = m.loop ? G.total - m.at : m.dur; if (x >= X(m.at) - 6 && x <= X(m.at + len)) return { mode: 'audio', k }; }
+    if (y > ROWS.clips[1] && TLV.z > 1) return { mode: 'pan' };
+    return { mode: 'scrub' };
+  }
   tl.addEventListener('pointerdown', e => {
     if (!ED.clips.length) return; tl.setPointerCapture(e.pointerId);
-    const T = tlT(e), y = e.clientY - tl.getBoundingClientRect().top;
-    if (y >= ROWS.clips[0] && y <= ROWS.clips[1]) { ED.sel = locate(T).i; renderClipList(); }
-    tlDrag = { was: ED.playing }; if (ED.playing) edPause(); seekGlobal(T, false);
+    const { x, y } = evPos(e), G = geo(), h = hitTest(x, y);
+    tlDrag = { ...h, x0: x, moved: false, was: ED.playing, view0: TLV.view, pps: G.pps };
+    if (ED.playing) edPause();
+    if (h.mode === 'trimL' || h.mode === 'trimR') { ED.sel = h.i; const c = ED.clips[h.i]; tlDrag.in0 = c.in; tlDrag.out0 = c.out; renderClipList(); }
+    else if (h.mode === 'ev') tlDrag.t0 = ED.events[h.i].t;
+    else if (h.mode === 'cap' || h.mode === 'capR') { tlDrag.t0 = ED.caps[h.i].t; tlDrag.d0 = ED.caps[h.i].d; selectCaption(h.i); }
+    else if (h.mode === 'audio') tlDrag.t0 = ED[h.k].at;
+    else if (h.mode === 'scrub') { const T = clamp(G.Tof(x), 0, ED.total); if (h.selClip) { ED.sel = locate(T).i; renderClipList(); } seekGlobal(T, false); }
   });
   tl.addEventListener('pointermove', e => {
-    if (!tlDrag || !ED.clips.length) return; const T = tlT(e), L = locate(T);
-    ED.T = T; if (L.i === ED.cur && video.dataset.url === ED.clips[L.i].url) video.currentTime = L.local;
+    if (!tlDrag || !ED.clips.length) return;
+    const { x } = evPos(e), G = geo(), dT = (x - tlDrag.x0) / tlDrag.pps, D = tlDrag;
+    if (!D.moved && Math.abs(x - D.x0) < 4) return;
+    if (!D.moved) { D.moved = true; if (!['scrub', 'pan'].includes(D.mode)) pushUndo(); }
+    if (D.mode === 'scrub') { const T = clamp(G.Tof(x), 0, ED.total), L = locate(T); ED.T = T; if (L.i === ED.cur && video.dataset.url === ED.clips[L.i].url) video.currentTime = L.local; }
+    else if (D.mode === 'pan') { TLV.view = D.view0 - dT; }
+    else if (D.mode === 'trimL' || D.mode === 'trimR') {
+      const c = ED.clips[D.i];
+      if (D.mode === 'trimL') c.in = clamp(D.in0 + dT, 0, c.out - 0.2); else c.out = clamp(D.out0 + dT, c.in + 0.2, c.dur);
+      let s = 0; ED.starts = ED.clips.map(cc => { const v = s; s += Math.max(0.05, cc.out - cc.in); return v; }); ED.total = s;
+      const frameT = D.mode === 'trimL' ? c.in : Math.max(c.in, c.out - 0.04);
+      ED.T = ED.starts[D.i] + (frameT - c.in);
+      if (video.dataset.url === c.url) { ED.cur = D.i; video.currentTime = frameT; }
+    }
+    else if (D.mode === 'ev') ED.events[D.i].t = +clamp(D.t0 + dT, 0, ED.total).toFixed(2);
+    else if (D.mode === 'cap') ED.caps[D.i].t = +clamp(D.t0 + dT, 0, ED.total).toFixed(2);
+    else if (D.mode === 'capR') ED.caps[D.i].d = +clamp(D.d0 + dT, 0.4, 30).toFixed(2);
+    else if (D.mode === 'audio') { ED[D.k].at = +clamp(D.t0 + dT, 0, ED.total).toFixed(2); updOffsets(); }
   });
-  tl.addEventListener('pointerup', e => { if (!tlDrag) return; const was = tlDrag.was; tlDrag = null; seekGlobal(tlT(e), was); });
+  tl.addEventListener('pointerup', e => {
+    if (!tlDrag) return; const D = tlDrag; tlDrag = null; const { x } = evPos(e), G = geo();
+    if (D.mode === 'scrub') seekGlobal(clamp(G.Tof(x), 0, ED.total), D.was);
+    else if (D.mode === 'trimL' || D.mode === 'trimR') { recalc(); seekGlobal(ED.starts[D.i] + (D.mode === 'trimL' ? 0 : ED.clips[D.i].out - ED.clips[D.i].in - 0.05), false); if (D.moved) status('Clip trimmed. Drag the edge back out any time to restore it.', true); }
+    else if (D.mode === 'ev') { ED.events.sort((a, b) => a.t - b.t); renderEvList(); if (!D.moved) seekGlobal(ED.events[D.i] ? ED.events[D.i].t : ED.T, false); }
+    else if (D.mode === 'cap' || D.mode === 'capR') { const c = ED.caps[D.i]; ED.caps.sort((a, b) => a.t - b.t); ED.capSel = ED.caps.indexOf(c); renderCapList(); seekGlobal(c.t + 0.05, false); }
+    else if (D.mode === 'audio') { syncFollowers(ED.T, true); renderTimelineSoon(); }
+  });
 
   // ===================== AI prompt builder =====================
   const cIds = ['cKind', 'cStyle', 'cVibe', 'cOutfit', 'cColour', 'cExtra', 'cNoGlasses', 'cOpenMouth'];
