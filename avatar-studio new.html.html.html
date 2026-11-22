@@ -587,7 +587,7 @@ const BUILTIN_PHOTOS = [HUNTER_AV];
     N.voiceIn = AC.createGain();
     N.hp = AC.createBiquadFilter(); N.hp.type = 'highpass'; N.hp.frequency.value = 110;
     N.lp = AC.createBiquadFilter(); N.lp.type = 'lowpass'; N.lp.frequency.value = 4500;
-    N.analyser = AC.createAnalyser(); N.analyser.fftSize = 2048; N.analyser.smoothingTimeConstant = 0.2;
+    N.analyser = AC.createAnalyser(); N.analyser.fftSize = 1024; N.analyser.smoothingTimeConstant = 0;
     N.voiceIn.connect(N.hp); N.hp.connect(N.lp); N.lp.connect(N.analyser);
     N.pitch = await makePitchNode();
     N.shaper = AC.createWaveShaper(); N.shaper.oversample = '2x';
@@ -601,8 +601,9 @@ const BUILTIN_PHOTOS = [HUNTER_AV];
     N.recDest = AC.createMediaStreamDestination();
     N.limiter = AC.createDynamicsCompressor();
     N.limiter.threshold.value = -6; N.limiter.knee.value = 4; N.limiter.ratio.value = 12; N.limiter.attack.value = 0.003; N.limiter.release.value = 0.15;
-    N.voiceOut.connect(N.limiter); N.limiter.connect(N.recDest);
-    N.monitor = AC.createGain(); N.limiter.connect(N.monitor); N.monitor.connect(AC.destination);
+    N.outDelay = AC.createDelay(0.5); N.outDelay.delayTime.value = 0.07;   // lets the mouth 'see' each syllable just before you hear it
+    N.voiceOut.connect(N.limiter); N.limiter.connect(N.outDelay); N.outDelay.connect(N.recDest);
+    N.monitor = AC.createGain(); N.outDelay.connect(N.monitor); N.monitor.connect(AC.destination);
     N.gameGain = AC.createGain(); N.gameGain.connect(N.recDest); N.gameGain.connect(AC.destination);
     tBuf = new Float32Array(N.analyser.fftSize); fBuf = new Uint8Array(N.analyser.frequencyBinCount);
     applyVoice(); applyGameVol(); route();
@@ -1677,13 +1678,13 @@ const BUILTIN_PHOTOS = [HUNTER_AV];
     const lvl = voiceBand;
     LS.floor = lvl < LS.floor ? lvl : Math.min(LS.floor + 0.0006, lvl);
     LS.peak = lvl > LS.peak ? lvl : Math.max(LS.floor + 0.12, LS.peak - 0.0012);
-    const gateN = gate * 0.6 + 0.12;                       // noise-gate slider raises the "closed" threshold
+    const gateN = gate * 0.6 + 0.2;                       // noise-gate slider raises the "closed" threshold
     let n = clamp((lvl - LS.floor) / (LS.peak - LS.floor + 1e-4)) * (+$('sens').value / 28);
     const rise = n - LS.prev; LS.prev = n;
-    let target = n <= gateN ? 0 : Math.pow(clamp((n - gateN) / (1 - gateN)), 2.0);
+    let target = n <= gateN ? 0 : 0.55 * Math.pow(clamp((n - gateN) / (1 - gateN)), 1.3);
     if (rms * +$('sens').value < gate * 0.5) target = 0;    // true silence: keep closed
-    if (rise < -0.04) target *= 0.35;                         // falling energy = closing between syllables
-    open += (target - open) * (target > open ? 0.75 : 0.7); if (open < 0.02) open = 0;
+    if (rise < -0.05) target *= 0.55;                         // falling energy = closing between syllables
+    open += (target - open) * (target > open ? 0.6 : 0.4); if (open < 0.03) open = 0;
     if (fxState.speaking && t < fxState.speakingUntil + 3000) open = Math.max(open, 0.25 + 0.55 * Math.abs(Math.sin(t / 70)) * (0.6 + 0.4 * Math.sin(t / 230)));
     $('meterFill').style.width = (v * 100).toFixed(0) + '%'; $('lvlTxt').textContent = (v * 100).toFixed(0) + '%';
 
