@@ -314,8 +314,8 @@
 
   <div class="tab" id="tSidekick">
     <p class="tip"><b>Talk to your avatar while you play.</b> Say something like "I'm going in to raid the bank" and she answers in character, out loud, with matching expressions.</p>
-    <button id="skTalk" class="primary">🎙 Tap &amp; talk to <span class="skName">Monkey</span></button>
-    <label class="chk"><input type="checkbox" id="skHands"> Hands-free: just say "Hey <span class="skName">Monkey</span>…"</label>
+    <button id="skTalk" class="primary">🎙 Tap &amp; talk to <span class="skName">Felisha</span></button>
+    <label class="chk"><input type="checkbox" id="skHands"> Hands-free: just say "Hey <span class="skName">Felisha</span>…"</label>
     <div class="two"><input type="text" id="skType" class="txt" placeholder="…or type a message" style="flex:3;margin:0"><button id="skSend" style="flex:1">Send</button></div>
     <div id="skLog"></div>
 
@@ -336,7 +336,7 @@
     </details>
     <details class="ed">
       <summary>🎭 Personality</summary>
-      <input type="text" id="skNameIn" class="txt" value="Monkey" placeholder="Avatar's name">
+      <input type="text" id="skNameIn" class="txt" value="Felisha" placeholder="Avatar's name">
       <textarea id="skPersona" rows="6" class="txt" style="resize:vertical"></textarea>
       <button id="skResetPersona">Reset personality</button>
       <button id="skClear" style="margin-top:6px">🧹 Forget the conversation</button>
@@ -2436,7 +2436,16 @@ Reply ONLY with JSON: {"say": "what you say out loud", "emotion": "happy|hype|an
   if (!$('skPersona').value.trim()) $('skPersona').value = DEFAULT_PERSONA;
   $('skResetPersona').addEventListener('click', () => { $('skPersona').value = DEFAULT_PERSONA; store.set('skPersona', DEFAULT_PERSONA); });
   $('skClear').addEventListener('click', () => { SK.hist = []; $('skLog').innerHTML = ''; skLog('sys', 'Conversation forgotten.'); });
-  function skName() { return ($('skNameIn').value || 'Monkey').trim(); }
+  if (/^\s*monkey\s*$/i.test($('skNameIn').value)) { $('skNameIn').value = 'Felisha'; store.set('skNameIn', 'Felisha'); }
+  function skName() { return ($('skNameIn').value || 'Felisha').trim(); }
+  // speech-to-text spells names many ways ("Felicia", "Phylicia"…), so accept close matches
+  const SK_ALIASES = { felisha: ['felisha', 'felicia', 'felecia', 'felícia', 'phylicia', 'felisa', 'falisha', 'filisha', 'flesha', 'fleisha', 'alicia', 'leesha', 'lisha', 'licia'] };
+  function skFindName(low) {
+    const n = skName().toLowerCase(), list = (SK_ALIASES[n] || []).concat([n]).sort((a, b) => b.length - a.length);
+    let best = null;
+    for (const a of list) { const i = low.lastIndexOf(a); if (i >= 0 && (!best || i > best.i)) best = { i, len: a.length }; }
+    return best;
+  }
   function skNames() { document.querySelectorAll('.skName').forEach(e => e.textContent = skName()); }
   skNames();
   function skLog(who, text) {
@@ -2564,9 +2573,12 @@ Reply ONLY with JSON: {"say": "what you say out loud", "emotion": "happy|hype|an
     const buf = SK.fill[keys[Math.floor(Math.random() * keys.length)]];
     const src = AC.createBufferSource(); src.buffer = buf; const gn = AC.createGain(); gn.gain.value = $('fxVol').value / 100;
     src.connect(gn); gn.connect(N.voiceIn); gn.connect(AC.destination);
+    SK.fillUntil = performance.now() + buf.duration * 1000;
     fxState.clipUntil = performance.now() + buf.duration * 1000 + 300; S.autoExpr = 'happy'; S.autoUntil = performance.now() + buf.duration * 1000 + 500;
     src.start();
   }
+  // wait for "let me check" to finish so she never talks over herself
+  async function skWaitFiller() { const w = (SK.fillUntil || 0) - performance.now(); if (w > 0) await new Promise(r => setTimeout(r, w + 250)); }
   async function skSpeak(say, emotion) {
     S.autoExpr = emotion; S.autoUntil = performance.now() + 4000 + say.length * 60; exprChangedAt = performance.now();
     const ek = $('skElKey').value.trim(), vid = $('skVoice').value;
@@ -2580,6 +2592,7 @@ Reply ONLY with JSON: {"say": "what you say out loud", "emotion": "happy|hype|an
         const ab = await r.arrayBuffer();
         await ensureAudio();
         const buf = await new Promise((res, rej) => { const p = AC.decodeAudioData(ab, res, rej); if (p && p.then) p.then(res, rej); });
+        await skWaitFiller();
         if (skSrc) try { skSrc.stop(); } catch {}
         const src = AC.createBufferSource(); src.buffer = buf; const gn = AC.createGain(); gn.gain.value = $('fxVol').value / 100;
         src.connect(gn); gn.connect(N.voiceIn); gn.connect(AC.destination);   // lip sync + recording + you hear it
@@ -2591,6 +2604,7 @@ Reply ONLY with JSON: {"say": "what you say out loud", "emotion": "happy|hype|an
       } catch (e) { skLog('sys', e.message + ' - using device voice instead.'); }
     }
     if (window.speechSynthesis) {
+      await skWaitFiller();
       await new Promise(res => {
         try {
           speechSynthesis.cancel();
@@ -2679,13 +2693,12 @@ Reply ONLY with JSON: {"say": "what you say out loud", "emotion": "happy|hype|an
       if (SK.busy || fxState.speaking || now < (fxState.clipUntil || 0) + 500) return;   // ignore while she's talking
       if (!armed) {
         let all = ''; for (let k = e.resultIndex; k < e.results.length; k++) all += e.results[k][0].transcript + ' ';
-        const low = all.toLowerCase(), i = low.indexOf(nm());
-        if (i < 0) return;
+        if (!skFindName(all.toLowerCase())) return;
         armed = true;
         col = skCollector(text => {
           armed = false;
-          const lt = text.toLowerCase(), j = lt.lastIndexOf(nm());
-          const msg = (j >= 0 ? text.slice(j + nm().length) : text).replace(/^[\s,.!?]+/, '').trim();
+          const f = skFindName(text.toLowerCase());
+          const msg = (f ? text.slice(f.i + f.len) : text).replace(/^[\s,.!?]+/, '').trim();
           if (msg.length > 1) skAsk(msg); else skTalkLabel();
         });
         skTalkLabel('👂 Yes? I’m listening…');
