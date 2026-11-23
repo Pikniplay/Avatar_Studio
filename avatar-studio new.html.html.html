@@ -324,6 +324,7 @@
       <p class="tip">Without a key she still replies using her built-in voice lines (free). With a key she understands anything you say. Get one at console.anthropic.com → API Keys. Costs are pay-as-you-go, usually a fraction of a penny per reply.</p>
       <input type="password" id="skKey" class="txt" placeholder="Anthropic API key (sk-ant-…)" autocomplete="off">
       <input type="text" id="skModel" class="txt" value="claude-haiku-5-5" placeholder="Model">
+      <label class="chk"><input type="checkbox" id="skWeb" checked> 🌐 Let her search the web when she needs to (about 1 cent per search)</label>
     </details>
     <details class="ed">
       <summary>🗣 Voice (ElevenLabs)</summary>
@@ -466,7 +467,7 @@ const BUILTIN_PHOTOS = [HUNTER_AV];
     const el = $(id); el.value = store.get(id, el.value);
     el.addEventListener('input', () => { store.set(id, el.value); refreshLabels(); });
   });
-  ['mirror', 'fxOn', 'rmBg', 'glanceOn', 'fxWords', 'fxCensor'].forEach(id => {
+  ['mirror', 'fxOn', 'rmBg', 'glanceOn', 'fxWords', 'fxCensor', 'skWeb'].forEach(id => {
     const el = $(id); el.checked = store.get(id, el.checked);
     el.addEventListener('change', () => { store.set(id, el.checked); if (id === 'monitor') route(); });
   });
@@ -2475,27 +2476,58 @@ Reply ONLY with JSON: {"say": "what you say out loud", "emotion": "happy|hype|an
   }
   // AI brain
   async function skThink(text) {
-    const key = $('skKey').value.trim();
+    const key = $('skKey').value.trim(), web = $('skWeb').checked;
     SK.hist.push({ role: 'user', content: text }); if (SK.hist.length > 16) SK.hist = SK.hist.slice(-16);
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-      body: JSON.stringify({ model: ($('skModel').value || 'claude-haiku-5-5').trim(), max_tokens: 400, system: $('skPersona').value.replace(/\{NAME\}/g, skName()), messages: SK.hist })
-    });
-    if (!r.ok) { SK.hist.pop(); const e = await r.text().catch(() => ''); throw new Error(r.status === 401 ? 'the Anthropic key was not accepted' : r.status === 404 ? 'model name not found (check the Model box)' : 'AI error ' + r.status + ' ' + e.slice(0, 120)); }
-    const j = await r.json(), raw = (j.content || []).map(c => c.text || '').join('').trim();
+    let sys = $('skPersona').value.replace(/\{NAME\}/g, skName());
+    if (web) sys += `\nYou can search the web. Only search when the player needs facts you don't know (game tips, missions, locations, news, scores). Never search for normal chat. After searching, give the single most useful tip in your own words, still short and in character, and don't read out links. Today's date is ${new Date().toDateString()}.`;
+    const body = { model: ($('skModel').value || 'claude-haiku-5-5').trim(), max_tokens: web ? 700 : 400, system: sys, messages: SK.hist.slice() };
+    if (web) body.tools = [{ type: 'web_search_20260318', name: 'web_search', max_uses: 2, allowed_callers: ['direct'] }];
+    const call = async b => {
+      const r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+        body: JSON.stringify(b)
+      });
+      if (!r.ok) {
+        const e = await r.text().catch(() => '');
+        if (r.status === 400 && b.tools && /web.?search|tool/i.test(e)) { skLog('sys', 'Web search isn’t available for this model/account, so she’ll answer without it.'); delete b.tools; b.max_tokens = 400; return call(b); }
+        throw new Error(r.status === 401 ? 'the Anthropic key was not accepted' : r.status === 404 ? 'model name not found (check the Model box)' : 'AI error ' + r.status + ' ' + e.slice(0, 120));
+      }
+      return r.json();
+    };
+    const lookTimer = web ? setTimeout(() => skLog('sys', '🔎 Looking that up…'), 2500) : null;
+    let j, raw = '', srcs = [];
+    try {
+      for (let k = 0; k < 3; k++) {
+        j = await call(body);
+        for (const c of j.content || []) {
+          if (c.type === 'text') raw += c.text || '';
+          if (c.type === 'web_search_tool_result' && Array.isArray(c.content)) c.content.forEach(x => x.url && srcs.push({ url: x.url, title: x.title || x.url }));
+        }
+        if (j.stop_reason !== 'pause_turn') break;
+        body.messages = body.messages.concat([{ role: 'assistant', content: j.content }]);
+      }
+    } catch (e) { SK.hist.pop(); clearTimeout(lookTimer); throw e; }
+    clearTimeout(lookTimer);
+    raw = raw.trim();
     let say = '', emotion = 'happy';
     const m = raw.match(/\{[\s\S]*\}/);
     if (m) { try { const o = JSON.parse(m[0]); say = o.say || ''; emotion = o.emotion || emotion; } catch {} }
-    if (!say) {   // reply wasn't clean JSON (e.g. quotes inside, or cut off): pull the words out anyway
+    if (!say) {
       const sm = raw.match(/"say"\s*:\s*"([\s\S]*?)"\s*,\s*"emotion"/) || raw.match(/"say"\s*:\s*"([\s\S]*)/);
       say = sm ? sm[1].replace(/"\s*}?\s*$/, '') : raw.replace(/^```(json)?|```$/g, '');
       const em = raw.match(/"emotion"\s*:\s*"(\w+)"/); if (em) emotion = em[1];
     }
-    say = say.replace(/\\"/g, '"').replace(/\\n/g, ' ').trim();
-    say = String(say).replace(/^["']|["']$/g, '').slice(0, 300);
-    SK.hist.push({ role: 'assistant', content: raw });
-    return { say, emotion: EXP[emotion] ? emotion : 'happy' };
+    say = say.replace(/\\"/g, '"').replace(/\\n/g, ' ').replace(/\s+/g, ' ').trim();
+    say = String(say).replace(/^["']|["']$/g, '').slice(0, 400);
+    SK.hist.push({ role: 'assistant', content: JSON.stringify({ say, emotion }) });
+    return { say, emotion: EXP[emotion] ? emotion : 'happy', srcs: srcs.slice(0, 2) };
+  }
+  function skSources(srcs) {
+    if (!srcs || !srcs.length) return;
+    const L = $('skLog'), d = document.createElement('div'); d.className = 'sk-sys'; d.append('🔗 Sources: ');
+    srcs.forEach((s2, i) => { const a = document.createElement('a'); a.href = s2.url; a.target = '_blank'; a.rel = 'noopener'; a.textContent = (s2.title || '').slice(0, 40) || 'link'; a.style.color = '#9fd8ff'; if (i) d.append(' · '); d.append(a); });
+    L.appendChild(d); L.scrollTop = L.scrollHeight;
   }
   // her voice
   let skSrc = null;
@@ -2544,8 +2576,8 @@ Reply ONLY with JSON: {"say": "what you say out loud", "emotion": "happy|hype|an
       if (!$('skKey').value.trim()) { skFree(text); await new Promise(r => setTimeout(r, 1800)); }
       else {
         S.autoExpr = 'happy';
-        const { say, emotion } = await skThink(text);
-        skLog('ai', say);
+        const { say, emotion, srcs } = await skThink(text);
+        skLog('ai', say); skSources(srcs);
         await skSpeak(say, emotion);
       }
     } catch (e) { skLog('sys', 'Problem: ' + e.message); }
