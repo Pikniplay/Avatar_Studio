@@ -48,7 +48,7 @@
   .tip { font-size: 12px; color: #a29db5; line-height: 1.45; margin: 6px 0; }
   .warn { font-size: 12px; color: #ffd166; line-height: 1.4; }
   .ok { font-size: 12px; color: #3ddc84; line-height: 1.4; }
-  .tabs { display: flex; gap: 4px; margin: 4px 0 8px; border-bottom: 1px solid #332e48; }
+  .tabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 8px; border-bottom: 1px solid #332e48; }
   .tabs button { width: auto; flex: 1; background: none; border: none; border-bottom: 2px solid transparent; border-radius: 0; color: #aaa; font-weight: 600; padding: 8px 2px; }
   .tabs button.on { color: #fff; border-bottom-color: #7c5cff; }
   .tab { display: none; } .tab.on { display: block; }
@@ -94,6 +94,9 @@
   body.recording #recBadge { display: inline; }
   kbd { background: #333; color: #fff; padding: 1px 5px; border-radius: 4px; font-size: 11px; }
   .hidden { display: none !important; }
+  #skLog { margin: 8px 0; max-height: 170px; overflow-y: auto; font-size: 12.5px; line-height: 1.4; }
+  #skLog div { padding: 5px 8px; border-radius: 8px; margin: 4px 0; }
+  .sk-you { background: #262236; } .sk-ai { background: #3a2a6a; } .sk-sys { color: #ffd166; font-size: 11.5px; }
   a.gen { display: block; text-align: center; padding: 8px 2px; border-radius: 8px; border: 1px solid #443d5e; background: #2a2640; color: #cfc6ff; font-size: 12px; text-decoration: none; font-weight: 600; }
   a.gen:hover { background: #3a3460; }
   #calibBar { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); background: rgba(16,14,26,.95); color: #fff; padding: 10px 14px; border-radius: 12px; display: none; gap: 10px; align-items: center; font-size: 13px; z-index: 5; }
@@ -189,6 +192,7 @@
     <button data-tab="tAvatar" class="on">Avatar</button>
     <button data-tab="tMotion">Motion</button>
     <button data-tab="tVoice">🔊 FX</button>
+    <button data-tab="tSidekick">🤖 Sidekick</button>
     <button data-tab="tCreate">✨ Create</button>
     <button data-tab="tHelp">Help</button>
   </div>
@@ -306,6 +310,35 @@
       <label for="gate"><span>Noise gate (ignore quiet sounds)</span><span id="gateVal"></span></label>
       <input type="range" id="gate" min="0" max="60" value="10">
     </div>
+  </div>
+
+  <div class="tab" id="tSidekick">
+    <p class="tip"><b>Talk to your avatar while you play.</b> Say something like "I'm going in to raid the bank" and she answers in character, out loud, with matching expressions.</p>
+    <button id="skTalk" class="primary">🎙 Tap &amp; talk to <span class="skName">Monkey</span></button>
+    <label class="chk"><input type="checkbox" id="skHands"> Hands-free: just say "Hey <span class="skName">Monkey</span>…"</label>
+    <div class="two"><input type="text" id="skType" class="txt" placeholder="…or type a message" style="flex:3;margin:0"><button id="skSend" style="flex:1">Send</button></div>
+    <div id="skLog"></div>
+
+    <details class="ed">
+      <summary>🧠 AI brain (Claude)</summary>
+      <p class="tip">Without a key she still replies using her built-in voice lines (free). With a key she understands anything you say. Get one at console.anthropic.com → API Keys. Costs are pay-as-you-go, usually a fraction of a penny per reply.</p>
+      <input type="password" id="skKey" class="txt" placeholder="Anthropic API key (sk-ant-…)" autocomplete="off">
+      <input type="text" id="skModel" class="txt" value="claude-haiku-5-5" placeholder="Model">
+    </details>
+    <details class="ed">
+      <summary>🗣 Voice (ElevenLabs)</summary>
+      <p class="tip">For her real voice on AI replies. Get your key at elevenlabs.io → Developers → API Keys. Without it, AI replies use your device's voice.</p>
+      <input type="password" id="skElKey" class="txt" placeholder="ElevenLabs API key" autocomplete="off">
+      <div class="two" style="margin-top:0"><select id="skVoice"><option value="">Load your voices first</option></select><button id="skLoadVoices">↻ Load my voices</button></div>
+    </details>
+    <details class="ed">
+      <summary>🎭 Personality</summary>
+      <input type="text" id="skNameIn" class="txt" value="Monkey" placeholder="Avatar's name">
+      <textarea id="skPersona" rows="6" class="txt" style="resize:vertical"></textarea>
+      <button id="skResetPersona">Reset personality</button>
+      <button id="skClear" style="margin-top:6px">🧹 Forget the conversation</button>
+    </details>
+    <p class="tip">🔒 Your keys are saved only in this browser on this device and are sent only to Anthropic and ElevenLabs. Don't enter them on a shared or public device.</p>
   </div>
 
   <div class="tab" id="tCreate">
@@ -634,7 +667,7 @@ const BUILTIN_PHOTOS = [HUNTER_AV];
     safeDisconnect(micNode); safeDisconnect(videoNode); safeDisconnect(voiceNode);
     N.voiceIn.gain.value = 1;
     if (S.mode === 'live') {
-      if (micNode) micNode.connect(N.voiceIn);
+      if (micNode && !(SK && SK.on)) micNode.connect(N.voiceIn);   // while chatting, only her voice moves her mouth
       N.monitor.gain.value = $('monitor').checked ? 1 : 0;
     } else {
       edGains();
@@ -2387,6 +2420,177 @@ const BUILTIN_PHOTOS = [HUNTER_AV];
     if (!tlDrag) return; const D = tlDrag; tlDrag = null;
     if (D.moved) { if (D.mode !== 'move') msg('Trimmed. Drag the edge back out any time to bring the footage back.'); stopAllAudio(); }
   });
+
+  // ===================== AI Sidekick =====================
+  var SK = { on: false, busy: false, hist: [], awaitUntil: 0, rec: null, hands: false };
+  const DEFAULT_PERSONA = `You are {NAME}, a sassy, cheeky cartoon monkey who is the player's gaming sidekick. You sit beside them while they play video games (often an open-world crime game set in a Florida-style state called Leonida) and react to what they tell you.
+Personality: loud, funny, confident, flirty-sarcastic, loves gold, money and fast cars, roasts the player's bad driving and bad decisions, but secretly rooting for them. Talk like a cheeky UK YouTuber with attitude. Occasional mild swearing is fine; never use slurs, hate, or sexual content.
+It's all a game: play along with in-game heists, chases and chaos, but never give real-world instructions for crimes or anything dangerous.
+Keep every reply SHORT: one or two punchy sentences, max 30 words, like a quick live reaction.
+Reply ONLY with JSON: {"say": "what you say out loud", "emotion": "happy|hype|angry|sad|love|shocked"}`;
+  const skIds = ['skKey', 'skModel', 'skElKey', 'skNameIn', 'skPersona'];
+  skIds.forEach(id => { const el = $(id), v = store.get(id, null); if (v !== null) el.value = v; el.addEventListener('input', () => { store.set(id, el.value); if (id === 'skNameIn') skNames(); }); el.addEventListener('keydown', e => e.stopPropagation()); });
+  if (!$('skPersona').value.trim()) $('skPersona').value = DEFAULT_PERSONA;
+  $('skResetPersona').addEventListener('click', () => { $('skPersona').value = DEFAULT_PERSONA; store.set('skPersona', DEFAULT_PERSONA); });
+  $('skClear').addEventListener('click', () => { SK.hist = []; $('skLog').innerHTML = ''; skLog('sys', 'Conversation forgotten.'); });
+  function skName() { return ($('skNameIn').value || 'Monkey').trim(); }
+  function skNames() { document.querySelectorAll('.skName').forEach(e => e.textContent = skName()); }
+  skNames();
+  function skLog(who, text) {
+    const L = $('skLog'), d = document.createElement('div');
+    d.className = 'sk-' + who; d.textContent = (who === 'you' ? '🧑 ' : who === 'ai' ? '🐒 ' : 'ℹ️ ') + text;
+    L.appendChild(d); while (L.children.length > 8) L.removeChild(L.firstChild); L.scrollTop = L.scrollHeight;
+  }
+  // voices list
+  $('skLoadVoices').addEventListener('click', async () => {
+    const key = $('skElKey').value.trim(); if (!key) { skLog('sys', 'Paste your ElevenLabs API key first.'); return; }
+    try {
+      const r = await fetch('https://api.elevenlabs.io/v1/voices', { headers: { 'xi-api-key': key } });
+      if (!r.ok) throw new Error(r.status === 401 ? 'that key was not accepted' : 'error ' + r.status);
+      const j = await r.json(), sel = $('skVoice'), saved = store.get('skVoice', '');
+      sel.innerHTML = '';
+      (j.voices || []).forEach(v => sel.appendChild(new Option(v.name, v.voice_id)));
+      if (saved) sel.value = saved;
+      skLog('sys', `Loaded ${(j.voices || []).length} voices. Pick her voice from the list.`);
+    } catch (e) { skLog('sys', 'Could not load voices: ' + e.message); }
+  });
+  $('skVoice').addEventListener('change', e => store.set('skVoice', e.target.value));
+  (() => { const v = store.get('skVoice', ''); if (v) { $('skVoice').innerHTML = ''; $('skVoice').appendChild(new Option('Saved voice', v)); } })();
+
+  // free mode: keywords -> built-in voice lines
+  const SK_KEYS = [
+    [/bank|heist|raid|rob|robbery|jewel|vault|score/, [13, 6]], [/police|cops|feds|wanted|stars|chase/, [5, 3]],
+    [/crash|crashed|hedge|bush|tree|wall/, [9, 4]], [/die|died|dead|wasted|killed|shot/, [3, 12]],
+    [/car|whip|steal|stole|drive|driving/, [6, 13]], [/won|win|passed|did it|made it|money|rich/, [8, 10]],
+    [/fail|failed|lost|lose|mission/, [18, 4]], [/again/, [4]], [/shut up|quiet/, [7]], [/sus|weird|strange/, [15]],
+    [/look at me|outfit|fit|drip/, [17, 10]], [/hate|annoying|idiot|stupid/, [0, 7]]
+  ];
+  function skFree(text) {
+    const t = text.toLowerCase(); let pick = null;
+    for (const [re, opts] of SK_KEYS) if (re.test(t)) { pick = opts[Math.floor(Math.random() * opts.length)]; break; }
+    if (pick === null) pick = [10, 11, 14, 9][Math.floor(Math.random() * 4)];
+    const prev = fxState.key; if (!prev.startsWith('pack:')) fxState.key = 'pack:f';
+    fireFX(pick, false); fxState.key = prev;
+    skLog('ai', FX[pick].say);
+  }
+  // AI brain
+  async function skThink(text) {
+    const key = $('skKey').value.trim();
+    SK.hist.push({ role: 'user', content: text }); if (SK.hist.length > 16) SK.hist = SK.hist.slice(-16);
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify({ model: ($('skModel').value || 'claude-haiku-5-5').trim(), max_tokens: 150, system: $('skPersona').value.replace(/\{NAME\}/g, skName()), messages: SK.hist })
+    });
+    if (!r.ok) { SK.hist.pop(); const e = await r.text().catch(() => ''); throw new Error(r.status === 401 ? 'the Anthropic key was not accepted' : r.status === 404 ? 'model name not found (check the Model box)' : 'AI error ' + r.status + ' ' + e.slice(0, 120)); }
+    const j = await r.json(), raw = (j.content || []).map(c => c.text || '').join('').trim();
+    let say = raw, emotion = 'happy';
+    const m = raw.match(/\{[\s\S]*\}/);
+    if (m) { try { const o = JSON.parse(m[0]); say = o.say || say; emotion = o.emotion || emotion; } catch {} }
+    say = String(say).replace(/^["']|["']$/g, '').slice(0, 300);
+    SK.hist.push({ role: 'assistant', content: raw });
+    return { say, emotion: EXP[emotion] ? emotion : 'happy' };
+  }
+  // her voice
+  let skSrc = null;
+  async function skSpeak(say, emotion) {
+    S.autoExpr = emotion; S.autoUntil = performance.now() + 4000 + say.length * 60; exprChangedAt = performance.now();
+    const ek = $('skElKey').value.trim(), vid = $('skVoice').value;
+    if (ek && vid) {
+      try {
+        const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(vid)}?output_format=mp3_44100_128`, {
+          method: 'POST', headers: { 'xi-api-key': ek, 'content-type': 'application/json', accept: 'audio/mpeg' },
+          body: JSON.stringify({ text: say, model_id: 'eleven_flash_v2_5', voice_settings: { stability: 0.35, similarity_boost: 0.75 } })
+        });
+        if (!r.ok) throw new Error(r.status === 401 ? 'ElevenLabs key not accepted' : 'ElevenLabs error ' + r.status);
+        const ab = await r.arrayBuffer();
+        await ensureAudio();
+        const buf = await new Promise((res, rej) => { const p = AC.decodeAudioData(ab, res, rej); if (p && p.then) p.then(res, rej); });
+        if (skSrc) try { skSrc.stop(); } catch {}
+        const src = AC.createBufferSource(); src.buffer = buf; const gn = AC.createGain(); gn.gain.value = $('fxVol').value / 100;
+        src.connect(gn); gn.connect(N.voiceIn); gn.connect(AC.destination);   // lip sync + recording + you hear it
+        fxState.clipUntil = performance.now() + buf.duration * 1000 + 400;
+        S.autoUntil = performance.now() + buf.duration * 1000 + 1200;
+        src.start(); skSrc = src;
+        await new Promise(res => { src.onended = res; setTimeout(res, buf.duration * 1000 + 500); });
+        return;
+      } catch (e) { skLog('sys', e.message + ' - using device voice instead.'); }
+    }
+    if (window.speechSynthesis) {
+      await new Promise(res => {
+        try {
+          speechSynthesis.cancel();
+          const u = new SpeechSynthesisUtterance(say);
+          const v = fxState.voices.find(x => 'tts:' + x.name === fxState.key) || fxState.voices.find(x => /female|samantha|karen|serena|kate|libby|sonia/i.test(x.name));
+          if (v) u.voice = v; u.rate = 1.05; u.volume = $('fxVol').value / 100;
+          fxState.speaking = true; fxState.speakingUntil = performance.now() + 600 + say.length * 75;
+          u.onend = u.onerror = () => { fxState.speaking = false; fxState.speakingUntil = performance.now(); res(); };
+          speechSynthesis.speak(u); setTimeout(res, 2000 + say.length * 120);
+        } catch { res(); }
+      });
+    }
+  }
+  async function skAsk(text) {
+    text = (text || '').trim(); if (!text || SK.busy) return;
+    SK.busy = true; skLog('you', text); $('skTalk').disabled = true;
+    try {
+      await ensureAudio(); route();
+      if (!$('skKey').value.trim()) { skFree(text); await new Promise(r => setTimeout(r, 1800)); }
+      else {
+        S.autoExpr = 'happy';
+        const { say, emotion } = await skThink(text);
+        skLog('ai', say);
+        await skSpeak(say, emotion);
+      }
+    } catch (e) { skLog('sys', 'Problem: ' + e.message); }
+    SK.busy = false; $('skTalk').disabled = false; skTalkLabel();
+  }
+  $('skSend').addEventListener('click', () => { const t = $('skType').value; $('skType').value = ''; unlockSK(); skAsk(t); });
+  $('skType').addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') $('skSend').click(); });
+  function unlockSK() {
+    ensureAudio().then(() => { try { if (AC.state !== 'running') AC.resume(); const b = AC.createBuffer(1, 1, 22050), s = AC.createBufferSource(); s.buffer = b; s.connect(AC.destination); s.start(0); } catch {} }).catch(() => {});
+    try { if (window.speechSynthesis && !fxState.speechUnlocked) { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u); fxState.speechUnlocked = true; } } catch {}
+  }
+  // listening
+  const SKR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  function skTalkLabel(t) { $('skTalk').innerHTML = t || `🎙 Tap &amp; talk to <span class="skName">${skName()}</span>`; }
+  $('skTalk').addEventListener('click', () => {
+    unlockSK();
+    if (!SKR) { skLog('sys', 'This browser can’t listen. Use Safari on iPad, or Chrome/Edge on a computer. You can still type below.'); return; }
+    if (SK.hands) { skLog('sys', 'Hands-free is on. Just say "Hey ' + skName() + '…"'); return; }
+    if (rec2 && listening) { try { $('fxListenBtn').click(); } catch {} }
+    const r = new SKR(); r.lang = 'en-GB'; r.interimResults = false; r.continuous = false; r.maxAlternatives = 1;
+    skTalkLabel('👂 Listening… speak now'); SK.on = true; route();
+    r.onresult = e => { const t = e.results[0][0].transcript; skAsk(t); };
+    r.onerror = e => { skLog('sys', e.error === 'not-allowed' ? 'Microphone blocked. Allow it in the address bar.' : e.error === 'no-speech' ? 'Didn’t hear anything. Try again.' : 'Listening problem: ' + e.error); };
+    r.onend = () => { SK.on = SK.hands; route(); if (!SK.busy) skTalkLabel(); };
+    try { r.start(); } catch {}
+  });
+  $('skHands').addEventListener('change', e => {
+    unlockSK();
+    SK.hands = e.target.checked;
+    if (SK.hands) {
+      if (!SKR) { e.target.checked = SK.hands = false; skLog('sys', 'This browser can’t listen hands-free. Use the type box instead.'); return; }
+      if (rec2 && listening) { try { $('fxListenBtn').click(); } catch {} }
+      SK.on = true; route(); skHandsStart(); skLog('sys', `Hands-free on. Say "Hey ${skName()}" then your message.`);
+    } else { SK.on = false; route(); if (SK.rec) try { SK.rec.stop(); } catch {} }
+  });
+  function skHandsStart() {
+    if (!SK.hands) return;
+    const r = new SKR(); SK.rec = r; r.lang = 'en-GB'; r.continuous = true; r.interimResults = false;
+    r.onresult = e => {
+      if (SK.busy) return;
+      const now = performance.now();
+      if (now < (fxState.clipUntil || 0) + 500 || fxState.speaking) return;   // don't hear herself
+      const t = e.results[e.results.length - 1][0].transcript.trim(), low = t.toLowerCase(), nm = skName().toLowerCase();
+      const i = low.indexOf(nm);
+      if (i >= 0) { const rest = t.slice(i + nm.length).replace(/^[\s,.!?]+/, ''); if (rest.length > 2) skAsk(rest); else { SK.awaitUntil = now + 7000; skTalkLabel('👂 Yes? I’m listening…'); } }
+      else if (now < SK.awaitUntil) { SK.awaitUntil = 0; skAsk(t); }
+    };
+    r.onerror = e => { if (e.error === 'not-allowed') { SK.hands = false; $('skHands').checked = false; skLog('sys', 'Microphone blocked. Allow it in the address bar.'); } };
+    r.onend = () => { if (SK.hands) setTimeout(() => { try { skHandsStart(); } catch {} }, 300); };
+    try { r.start(); } catch {}
+  }
 
   // ===================== AI prompt builder =====================
   const cIds = ['cKind', 'cStyle', 'cVibe', 'cOutfit', 'cColour', 'cExtra', 'cNoGlasses', 'cOpenMouth'];
