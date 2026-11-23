@@ -2642,7 +2642,7 @@ Reply ONLY with JSON: {"say": "what you say out loud", "emotion": "happy|hype|an
   }
   // listening
   const SKR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  function skTalkLabel(t) { $('skTalk').innerHTML = t || `🎙 Tap &amp; talk to <span class="skName">${skName()}</span>`; }
+  function skTalkLabel(t) { $('skTalk').innerHTML = t || (SK.hands ? `👂 Hands-free: say "Hey <span class="skName">${skName()}</span>…"` : `🎙 Tap &amp; talk to <span class="skName">${skName()}</span>`); }
   // Collects your whole sentence (even with pauses) and only sends it once you stop talking for a moment.
   const SK_PAUSE = 1700;
   function skCollector(onDone) {
@@ -2681,33 +2681,48 @@ Reply ONLY with JSON: {"say": "what you say out loud", "emotion": "happy|hype|an
       if (!SKR) { e.target.checked = SK.hands = false; skLog('sys', 'This browser can’t listen hands-free. Use the type box instead.'); return; }
       if (rec2 && listening) { try { $('fxListenBtn').click(); } catch {} }
       SK.on = true; route(); skHandsStart(); skLog('sys', `Hands-free on. Say "Hey ${skName()}" then your message.`);
-    } else { SK.on = false; route(); if (SK.rec) try { SK.rec.stop(); } catch {} skTalkLabel(); }
+    } else { SK.on = false; route(); const r0 = SK.rec; SK.rec = null; if (r0) try { r0.onend = null; r0.stop(); } catch {} skTalkLabel(); }
   });
   function skHandsStart() {
     if (!SK.hands) return;
-    const r = new SKR(); SK.rec = r; r.lang = 'en-GB'; r.continuous = true; r.interimResults = true;
-    let col = null, armed = false;
-    const nm = () => skName().toLowerCase();
+    if (SK.rec) { try { SK.rec.onend = null; SK.rec.abort(); } catch {} }
+    const r = new SKR(); SK.rec = r; r.lang = 'en-GB'; r.continuous = true; r.interimResults = true; r.maxAlternatives = 1;
+    let col = null, armed = false, waitTimer = null;
+    // is she talking right now? (time-based, so a stuck flag can never block her ears)
+    const herTurn = now => SK.busy || now < (fxState.clipUntil || 0) + 400 || (fxState.speaking && now < (fxState.speakingUntil || 0) + 1500);
+    const arm = () => {
+      armed = true; clearTimeout(waitTimer);
+      col = skCollector(text => {
+        const f = skFindName(text.toLowerCase());
+        const msg = (f ? text.slice(f.i + f.len) : text).replace(/^[\s,.!?]+/, '').trim();
+        if (msg.length > 1) { armed = false; col = null; skAsk(msg); }
+        else {   // you only said her name: keep listening for your next sentence
+          col = null; skTalkLabel('👂 Yes babe? Go on…');
+          waitTimer = setTimeout(() => { armed = false; col = null; if (!SK.busy) skTalkLabel(SK.hands ? `👂 Hands-free: say "Hey ${skName()}…"` : undefined); }, 7000);
+        }
+      });
+    };
     r.onresult = e => {
       const now = performance.now();
-      if (SK.busy || fxState.speaking || now < (fxState.clipUntil || 0) + 500) return;   // ignore while she's talking
+      if (herTurn(now)) return;   // ignore while she's talking
+      let heard = ''; for (let k = e.resultIndex; k < e.results.length; k++) heard += e.results[k][0].transcript + ' ';
+      heard = heard.trim();
       if (!armed) {
-        let all = ''; for (let k = e.resultIndex; k < e.results.length; k++) all += e.results[k][0].transcript + ' ';
-        if (!skFindName(all.toLowerCase())) return;
-        armed = true;
-        col = skCollector(text => {
-          armed = false;
-          const f = skFindName(text.toLowerCase());
-          const msg = (f ? text.slice(f.i + f.len) : text).replace(/^[\s,.!?]+/, '').trim();
-          if (msg.length > 1) skAsk(msg); else skTalkLabel();
-        });
-        skTalkLabel('👂 Yes? I’m listening…');
+        if (heard) skTalkLabel('👂 heard: "' + (heard.length > 40 ? '…' + heard.slice(-40) : heard) + '"');
+        if (!skFindName(heard.toLowerCase())) return;
+        arm(); skTalkLabel('👂 Yes? I’m listening…');
       }
+      if (!col) arm();
       col.feed(e);
     };
-    r.onerror = e => { if (e.error === 'not-allowed') { SK.hands = false; $('skHands').checked = false; skLog('sys', 'Microphone blocked. Allow it in the address bar.'); } };
-    r.onend = () => { if (col && armed) col.finish(); if (SK.hands) setTimeout(() => { try { skHandsStart(); } catch {} }, 300); };
-    try { r.start(); } catch {}
+    r.onerror = e => {
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { SK.hands = false; $('skHands').checked = false; skLog('sys', 'Microphone blocked. Click the icon left of the web address and allow the microphone.'); }
+      else if (e.error === 'audio-capture') skLog('sys', 'No microphone found. Check your headset is plugged in and picked in Chrome settings.');
+      else if (e.error === 'network') skLog('sys', 'Listening needs the internet. Check your connection.');
+    };
+    r.onend = () => { if (col && armed) col.finish(); if (SK.hands && SK.rec === r) setTimeout(() => { try { if (SK.hands && SK.rec === r) skHandsStart(); } catch {} }, 250); };
+    try { r.start(); } catch { setTimeout(() => { if (SK.hands) skHandsStart(); }, 1000); }
+    skTalkLabel(`👂 Hands-free: say "Hey ${skName()}…"`);
   }
 
   // ===================== AI prompt builder =====================
