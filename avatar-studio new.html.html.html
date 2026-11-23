@@ -324,7 +324,9 @@
       <p class="tip">Without a key she still replies using her built-in voice lines (free). With a key she understands anything you say. Get one at console.anthropic.com → API Keys. Costs are pay-as-you-go, usually a fraction of a penny per reply.</p>
       <input type="password" id="skKey" class="txt" placeholder="Anthropic API key (sk-ant-…)" autocomplete="off">
       <input type="text" id="skModel" class="txt" value="claude-haiku-5-5" placeholder="Model">
-      <label class="chk"><input type="checkbox" id="skWeb" checked> 🌐 Let her search the web when she needs to (about 1 cent per search)</label>
+      <label class="chk"><input type="checkbox" id="skWeb" checked> 🌐 Let her look things up when she needs to (about 1 cent per search)</label>
+      <input type="text" id="skSites" class="txt" value="gtabase.com" placeholder="Only search these sites (leave empty for the whole web)">
+      <p class="tip">She looks things up live on these sites and credits them with a link. Nothing is copied into the app. Separate several sites with commas.</p>
     </details>
     <details class="ed">
       <summary>🗣 Voice (ElevenLabs)</summary>
@@ -2429,7 +2431,7 @@ Personality: loud, funny, confident, flirty-sarcastic, loves gold, money and fas
 It's all a game: play along with in-game heists, chases and chaos, but never give real-world instructions for crimes or anything dangerous.
 Keep every reply SHORT: one or two punchy sentences, max 30 words, like a quick live reaction.
 Reply ONLY with JSON: {"say": "what you say out loud", "emotion": "happy|hype|angry|sad|love|shocked"}`;
-  const skIds = ['skKey', 'skModel', 'skElKey', 'skNameIn', 'skPersona'];
+  const skIds = ['skKey', 'skModel', 'skElKey', 'skNameIn', 'skPersona', 'skSites'];
   skIds.forEach(id => { const el = $(id), v = store.get(id, null); if (v !== null) el.value = v; el.addEventListener('input', () => { store.set(id, el.value); if (id === 'skNameIn') skNames(); }); el.addEventListener('keydown', e => e.stopPropagation()); });
   if (!$('skPersona').value.trim()) $('skPersona').value = DEFAULT_PERSONA;
   $('skResetPersona').addEventListener('click', () => { $('skPersona').value = DEFAULT_PERSONA; store.set('skPersona', DEFAULT_PERSONA); });
@@ -2481,7 +2483,9 @@ Reply ONLY with JSON: {"say": "what you say out loud", "emotion": "happy|hype|an
     let sys = $('skPersona').value.replace(/\{NAME\}/g, skName());
     if (web) sys += `\nYou can search the web. Only search when the player needs facts you don't know (game tips, missions, locations, news, scores). Never search for normal chat. After searching, give the single most useful tip in your own words, still short and in character, and don't read out links. Today's date is ${new Date().toDateString()}.`;
     const body = { model: ($('skModel').value || 'claude-haiku-5-5').trim(), max_tokens: web ? 700 : 400, system: sys, messages: SK.hist.slice() };
-    if (web) body.tools = [{ type: 'web_search_20260318', name: 'web_search', max_uses: 2, allowed_callers: ['direct'] }];
+    const sites = $('skSites').value.split(/[,\s]+/).map(x => x.trim().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, '')).filter(Boolean);
+    if (web) { const tool = { type: 'web_search_20260318', name: 'web_search', max_uses: 1, allowed_callers: ['direct'] }; if (sites.length) tool.allowed_domains = sites; body.tools = [tool]; }
+    if (web && sites.length) body.system += `\nWhen you look something up, you can only search: ${sites.join(', ')}. Search once, then answer.`;
     const call = async b => {
       const r = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -2495,7 +2499,7 @@ Reply ONLY with JSON: {"say": "what you say out loud", "emotion": "happy|hype|an
       }
       return r.json();
     };
-    const lookTimer = web ? setTimeout(() => skLog('sys', '🔎 Looking that up…'), 2500) : null;
+    const lookTimer = web ? setTimeout(() => { skLog('sys', '🔎 Looking that up…'); skFiller(); }, 1300) : null;
     let j, raw = '', srcs = [];
     try {
       for (let k = 0; k < 3; k++) {
@@ -2525,12 +2529,44 @@ Reply ONLY with JSON: {"say": "what you say out loud", "emotion": "happy|hype|an
   }
   function skSources(srcs) {
     if (!srcs || !srcs.length) return;
-    const L = $('skLog'), d = document.createElement('div'); d.className = 'sk-sys'; d.append('🔗 Sources: ');
-    srcs.forEach((s2, i) => { const a = document.createElement('a'); a.href = s2.url; a.target = '_blank'; a.rel = 'noopener'; a.textContent = (s2.title || '').slice(0, 40) || 'link'; a.style.color = '#9fd8ff'; if (i) d.append(' · '); d.append(a); });
+    const L = $('skLog'), d = document.createElement('div'); d.className = 'sk-sys'; d.append('🔗 Source: ');
+    srcs.forEach((s2, i) => {
+      let site = ''; try { site = new URL(s2.url).hostname.replace(/^www\./, ''); } catch {}
+      const nice = /gtabase/.test(site) ? 'GTABase' : site;
+      const a = document.createElement('a'); a.href = s2.url; a.target = '_blank'; a.rel = 'noopener';
+      a.textContent = nice + ((s2.title || '') ? ': ' + s2.title.slice(0, 40) : ''); a.style.color = '#9fd8ff'; if (i) d.append(' · '); d.append(a);
+    });
     L.appendChild(d); L.scrollTop = L.scrollHeight;
   }
   // her voice
   let skSrc = null;
+  // "Hold on, let me check…" in her real voice while she searches (made once, then reused instantly)
+  const SK_FILLERS = ['Hold on, babe, let me check.', 'Ooh, one sec, let me look that up.', 'Hang on, hang on, checking.'];
+  SK.fill = {};
+  async function skPrepFillers() {
+    const ek = $('skElKey').value.trim(), vid = $('skVoice').value; if (!ek || !vid || SK.fillFor === vid) return;
+    SK.fillFor = vid; SK.fill = {};
+    await ensureAudio();
+    for (let i = 0; i < SK_FILLERS.length; i++) {
+      try {
+        const id = 'filler_' + vid + '_' + i; let ab = null; const c = await DB.getClip(id);
+        if (c && c.data) ab = c.data;
+        else {
+          const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(vid)}?output_format=mp3_44100_128`, { method: 'POST', headers: { 'xi-api-key': ek, 'content-type': 'application/json', accept: 'audio/mpeg' }, body: JSON.stringify({ text: SK_FILLERS[i], model_id: 'eleven_flash_v2_5', voice_settings: { stability: 0.35, similarity_boost: 0.75 } }) });
+          if (!r.ok) continue; ab = await r.arrayBuffer(); DB.putClip({ id, data: ab });
+        }
+        SK.fill[i] = await new Promise((res, rej) => { const p = AC.decodeAudioData(ab.slice(0), res, rej); if (p && p.then) p.then(res, rej); });
+      } catch {}
+    }
+  }
+  function skFiller() {
+    const keys = Object.keys(SK.fill); if (!keys.length || !AC) return;
+    const buf = SK.fill[keys[Math.floor(Math.random() * keys.length)]];
+    const src = AC.createBufferSource(); src.buffer = buf; const gn = AC.createGain(); gn.gain.value = $('fxVol').value / 100;
+    src.connect(gn); gn.connect(N.voiceIn); gn.connect(AC.destination);
+    fxState.clipUntil = performance.now() + buf.duration * 1000 + 300; S.autoExpr = 'happy'; S.autoUntil = performance.now() + buf.duration * 1000 + 500;
+    src.start();
+  }
   async function skSpeak(say, emotion) {
     S.autoExpr = emotion; S.autoUntil = performance.now() + 4000 + say.length * 60; exprChangedAt = performance.now();
     const ek = $('skElKey').value.trim(), vid = $('skVoice').value;
@@ -2570,6 +2606,7 @@ Reply ONLY with JSON: {"say": "what you say out loud", "emotion": "happy|hype|an
   }
   async function skAsk(text) {
     text = (text || '').trim(); if (!text || SK.busy) return;
+    if ($('skWeb').checked) skPrepFillers().catch(() => {});
     SK.busy = true; skLog('you', text); $('skTalk').disabled = true;
     try {
       await ensureAudio(); route();
