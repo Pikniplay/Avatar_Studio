@@ -2480,13 +2480,19 @@ Reply ONLY with JSON: {"say": "what you say out loud", "emotion": "happy|hype|an
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-      body: JSON.stringify({ model: ($('skModel').value || 'claude-haiku-5-5').trim(), max_tokens: 150, system: $('skPersona').value.replace(/\{NAME\}/g, skName()), messages: SK.hist })
+      body: JSON.stringify({ model: ($('skModel').value || 'claude-haiku-5-5').trim(), max_tokens: 400, system: $('skPersona').value.replace(/\{NAME\}/g, skName()), messages: SK.hist })
     });
     if (!r.ok) { SK.hist.pop(); const e = await r.text().catch(() => ''); throw new Error(r.status === 401 ? 'the Anthropic key was not accepted' : r.status === 404 ? 'model name not found (check the Model box)' : 'AI error ' + r.status + ' ' + e.slice(0, 120)); }
     const j = await r.json(), raw = (j.content || []).map(c => c.text || '').join('').trim();
-    let say = raw, emotion = 'happy';
+    let say = '', emotion = 'happy';
     const m = raw.match(/\{[\s\S]*\}/);
-    if (m) { try { const o = JSON.parse(m[0]); say = o.say || say; emotion = o.emotion || emotion; } catch {} }
+    if (m) { try { const o = JSON.parse(m[0]); say = o.say || ''; emotion = o.emotion || emotion; } catch {} }
+    if (!say) {   // reply wasn't clean JSON (e.g. quotes inside, or cut off): pull the words out anyway
+      const sm = raw.match(/"say"\s*:\s*"([\s\S]*?)"\s*,\s*"emotion"/) || raw.match(/"say"\s*:\s*"([\s\S]*)/);
+      say = sm ? sm[1].replace(/"\s*}?\s*$/, '') : raw.replace(/^```(json)?|```$/g, '');
+      const em = raw.match(/"emotion"\s*:\s*"(\w+)"/); if (em) emotion = em[1];
+    }
+    say = say.replace(/\\"/g, '"').replace(/\\n/g, ' ').trim();
     say = String(say).replace(/^["']|["']$/g, '').slice(0, 300);
     SK.hist.push({ role: 'assistant', content: raw });
     return { say, emotion: EXP[emotion] ? emotion : 'happy' };
@@ -2554,16 +2560,35 @@ Reply ONLY with JSON: {"say": "what you say out loud", "emotion": "happy|hype|an
   // listening
   const SKR = window.SpeechRecognition || window.webkitSpeechRecognition;
   function skTalkLabel(t) { $('skTalk').innerHTML = t || `🎙 Tap &amp; talk to <span class="skName">${skName()}</span>`; }
+  // Collects your whole sentence (even with pauses) and only sends it once you stop talking for a moment.
+  const SK_PAUSE = 1700;
+  function skCollector(onDone) {
+    const C = { finals: '', interim: '', timer: null, done: false };
+    C.feed = (e) => {
+      let fin = '', inter = '';
+      for (let k = e.resultIndex; k < e.results.length; k++) { const tr = e.results[k][0].transcript; if (e.results[k].isFinal) fin += tr + ' '; else inter += tr; }
+      C.finals += fin; C.interim = inter;
+      const now = (C.finals + C.interim).trim();
+      if (now) skTalkLabel('👂 "' + (now.length > 60 ? '…' + now.slice(-60) : now) + '" (tap to send)');
+      clearTimeout(C.timer); C.timer = setTimeout(C.finish, SK_PAUSE);
+    };
+    C.finish = () => { if (C.done) return; C.done = true; clearTimeout(C.timer); onDone((C.finals + ' ' + C.interim).replace(/\s+/g, ' ').trim()); };
+    return C;
+  }
+  let skTapRec = null, skTapCol = null;
   $('skTalk').addEventListener('click', () => {
     unlockSK();
     if (!SKR) { skLog('sys', 'This browser can’t listen. Use Safari on iPad, or Chrome/Edge on a computer. You can still type below.'); return; }
     if (SK.hands) { skLog('sys', 'Hands-free is on. Just say "Hey ' + skName() + '…"'); return; }
+    if (skTapRec) { skTapCol && skTapCol.finish(); try { skTapRec.stop(); } catch {} return; }   // second tap = send now
     if (rec2 && listening) { try { $('fxListenBtn').click(); } catch {} }
-    const r = new SKR(); r.lang = 'en-GB'; r.interimResults = false; r.continuous = false; r.maxAlternatives = 1;
-    skTalkLabel('👂 Listening… speak now'); SK.on = true; route();
-    r.onresult = e => { const t = e.results[0][0].transcript; skAsk(t); };
-    r.onerror = e => { skLog('sys', e.error === 'not-allowed' ? 'Microphone blocked. Allow it in the address bar.' : e.error === 'no-speech' ? 'Didn’t hear anything. Try again.' : 'Listening problem: ' + e.error); };
-    r.onend = () => { SK.on = SK.hands; route(); if (!SK.busy) skTalkLabel(); };
+    const r = new SKR(); r.lang = 'en-GB'; r.interimResults = true; r.continuous = true; r.maxAlternatives = 1;
+    skTapRec = r; SK.on = true; route();
+    skTapCol = skCollector(text => { try { r.stop(); } catch {} if (text) skAsk(text); else skLog('sys', 'Didn’t catch that. Try again.'); });
+    skTalkLabel('👂 Listening… speak now (tap to send)');
+    r.onresult = e => skTapCol.feed(e);
+    r.onerror = e => { if (e.error === 'not-allowed') skLog('sys', 'Microphone blocked. Allow it in the address bar.'); else if (e.error !== 'no-speech' && e.error !== 'aborted') skLog('sys', 'Listening problem: ' + e.error); };
+    r.onend = () => { if (skTapCol && !skTapCol.done) skTapCol.finish(); skTapRec = null; SK.on = SK.hands; route(); if (!SK.busy) skTalkLabel(); };
     try { r.start(); } catch {}
   });
   $('skHands').addEventListener('change', e => {
@@ -2573,22 +2598,33 @@ Reply ONLY with JSON: {"say": "what you say out loud", "emotion": "happy|hype|an
       if (!SKR) { e.target.checked = SK.hands = false; skLog('sys', 'This browser can’t listen hands-free. Use the type box instead.'); return; }
       if (rec2 && listening) { try { $('fxListenBtn').click(); } catch {} }
       SK.on = true; route(); skHandsStart(); skLog('sys', `Hands-free on. Say "Hey ${skName()}" then your message.`);
-    } else { SK.on = false; route(); if (SK.rec) try { SK.rec.stop(); } catch {} }
+    } else { SK.on = false; route(); if (SK.rec) try { SK.rec.stop(); } catch {} skTalkLabel(); }
   });
   function skHandsStart() {
     if (!SK.hands) return;
-    const r = new SKR(); SK.rec = r; r.lang = 'en-GB'; r.continuous = true; r.interimResults = false;
+    const r = new SKR(); SK.rec = r; r.lang = 'en-GB'; r.continuous = true; r.interimResults = true;
+    let col = null, armed = false;
+    const nm = () => skName().toLowerCase();
     r.onresult = e => {
-      if (SK.busy) return;
       const now = performance.now();
-      if (now < (fxState.clipUntil || 0) + 500 || fxState.speaking) return;   // don't hear herself
-      const t = e.results[e.results.length - 1][0].transcript.trim(), low = t.toLowerCase(), nm = skName().toLowerCase();
-      const i = low.indexOf(nm);
-      if (i >= 0) { const rest = t.slice(i + nm.length).replace(/^[\s,.!?]+/, ''); if (rest.length > 2) skAsk(rest); else { SK.awaitUntil = now + 7000; skTalkLabel('👂 Yes? I’m listening…'); } }
-      else if (now < SK.awaitUntil) { SK.awaitUntil = 0; skAsk(t); }
+      if (SK.busy || fxState.speaking || now < (fxState.clipUntil || 0) + 500) return;   // ignore while she's talking
+      if (!armed) {
+        let all = ''; for (let k = e.resultIndex; k < e.results.length; k++) all += e.results[k][0].transcript + ' ';
+        const low = all.toLowerCase(), i = low.indexOf(nm());
+        if (i < 0) return;
+        armed = true;
+        col = skCollector(text => {
+          armed = false;
+          const lt = text.toLowerCase(), j = lt.lastIndexOf(nm());
+          const msg = (j >= 0 ? text.slice(j + nm().length) : text).replace(/^[\s,.!?]+/, '').trim();
+          if (msg.length > 1) skAsk(msg); else skTalkLabel();
+        });
+        skTalkLabel('👂 Yes? I’m listening…');
+      }
+      col.feed(e);
     };
     r.onerror = e => { if (e.error === 'not-allowed') { SK.hands = false; $('skHands').checked = false; skLog('sys', 'Microphone blocked. Allow it in the address bar.'); } };
-    r.onend = () => { if (SK.hands) setTimeout(() => { try { skHandsStart(); } catch {} }, 300); };
+    r.onend = () => { if (col && armed) col.finish(); if (SK.hands) setTimeout(() => { try { skHandsStart(); } catch {} }, 300); };
     try { r.start(); } catch {}
   }
 
